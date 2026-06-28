@@ -1042,7 +1042,7 @@ def _build_cs(wb, data):
         elif "DHE" in kx and "ECDHE" not in kx:
             sv = "Acceptable" if any(d in nm for d in ("DHE_RSA","DHE_DSS","DHE_ANON")) and sec_bits >= 2048 else "High"
         elif "ECDHE" in kx and "MLKEM" not in kx and "DHE" not in kx:
-            sv = "Acceptable"
+            sv = "Low"
         elif any(x in kx for x in ("MLKEM", "KYBER", "HYBRID")):
             sv = "Low"
         else:
