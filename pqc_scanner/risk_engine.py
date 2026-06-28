@@ -59,7 +59,11 @@ def _cert_size_label(algo_name, key_size):
         return "ANYTHING IN PQC"
     if "RSA-" in a:
         m = re.search(r"RSA[-_ ]?(\d+)", a)
-        k = int(m.group(1)) if m else key_size
+        if m:
+            stated = int(m.group(1))
+            k = key_size if key_size and key_size != stated else stated
+        else:
+            k = key_size
         if k >= 4096:
             return "RSA 4096 & above"
         if k >= 3072:
@@ -106,6 +110,48 @@ def _cert_size_label(algo_name, key_size):
     if "ED448" in a:
         return "Ed448"
     return "ANYTHING ELSE"
+
+def _cert_algo_display(sig_alg, algo_name, key_size):
+    a = str(algo_name or "").strip()
+    s = str(sig_alg or "").upper()
+    if a:
+        if "RSA" in a:
+            if key_size and key_size > 0:
+                return f"RSA-{key_size}"
+            return "RSA"
+        if any(x in a.upper() for x in ("ECDSA", "ED25519", "ED448", "DILITHIUM", "FALCON", "SPHINCS", "KYBER", "SLHDSA")):
+            return a
+    if "RSA" in s:
+        return f"RSA-{key_size}" if key_size and key_size > 0 else "RSA"
+    if "ECDSA" in s:
+        return f"ECDSA-{key_size}" if key_size and key_size > 0 else "ECDSA"
+    if "ED25519" in s:
+        return "Ed25519"
+    if "ED448" in s:
+        return "Ed448"
+    return a or sig_alg or "Unknown"
+
+def _normalize_cert_key_size(algo_name, key_size):
+    assert key_size is not None
+    k = int(key_size) if isinstance(key_size, (int, float)) else 0
+    if k <= 0:
+        return 0
+    a = str(algo_name or "").upper()
+    if "RSA-" in a:
+        m = re.search(r"RSA[-_ ]?(\d+)", a)
+        if m:
+            stated = int(m.group(1))
+            if k == stated:
+                return k
+            if k * 8 == stated:
+                return k * 8
+    if "RSA" in a and k < 128:
+        return k * 8
+    if any(x in a for x in ("ECDSA", "EC")) and k in (28, 32, 48, 66, 72, 96):
+        return k * 8
+    if any(x in a for x in ("ED25519", "ED448")) and k in (32, 57):
+        return k * 8
+    return k
 
 def _signature_label(sig_alg):
     s = str(sig_alg or "").upper()
@@ -393,7 +439,7 @@ def _p_sev(p, s):
     return {"TLS 1.3":"Critical", "TLS 1.2":"Medium", "TLS 1.1":"Low", "TLS 1.0":"Low", "SSLv3":"Low", "SSLv2":"Low"}.get(p, "Acceptable")
 
 def _p_std(p): 
-    return {"TLS 1.3":"RFC 8446", "TLS 1.2":"RFC 5246", "TLS 1.1":"RFC 8996", "TLS 1.0":"RFC 8996", "SSLv3":"RFC 7568", "SSLv2":"RFC 6176"}.get(p, "NIST SP 800-52r2")
+    return {"TLS 1.3":"NIST SP 800-52-r2", "TLS 1.2":"NIST SP 800-52-r2", "TLS 1.1":"RFC 8996", "TLS 1.0":"RFC 8996", "SSLv3":"RFC 7568", "SSLv2":"RFC 6176"}.get(p, "NIST SP 800-52r2")
 
 def _pk_a(s, k):
     s, k = (s or "").upper(), k or 0
@@ -411,7 +457,7 @@ def _exp(e, d):
     try:
         dy = (datetime.fromisoformat(d.replace("Z","+00:00")) - datetime.now(timezone.utc)).days
         if dy < 0: return "Critical", -10
-        if dy < 90: return "High", -6
+        if dy <= 30: return "Medium", -2
         if dy < 180: return "Acceptable", 5
         return "Low", 10
     except: return "Acceptable", 5
@@ -485,6 +531,124 @@ def _cipher_bulk_recommendation(bulk, mac):
         return "AES CBC + HMAC", "NIST SP 800-131A rev 2/RFC 5246", "Strongly Advised to have ChaCha20 or AES 128 atleast"
     return b or "Unknown", "RFC 8439", "Recommended(OPT) to have ChaCha20 or AES 256"
 
+def _normalized_negotiated_group_name(group):
+    if not group:
+        return ""
+    g = str(group).strip()
+    if not g:
+        return ""
+    if re.search(r"x25519.*mlkem|mlkem.*x25519", g, re.I):
+        return "(X25519)MLKEM768"
+    if re.search(r"\bx25519\b", g, re.I):
+        return "X25519"
+    if re.search(r"\bsecp256r1\b", g, re.I):
+        return "secp256r1"
+    if re.search(r"\bsecp384r1\b", g, re.I):
+        return "secp384r1"
+    if re.search(r"\bsecp521r1\b", g, re.I):
+        return "secp521r1"
+    if re.search(r"\bsecp224r1\b", g, re.I):
+        return "secp224r1"
+    if re.search(r"\bsecp192r1\b", g, re.I):
+        return "secp192r1"
+    m = re.search(r"\bffdhe(\d+)\b", g, re.I)
+    if m:
+        size = int(m.group(1))
+        if size >= 4096:
+            return "ffdhe4096"
+        if size >= 3072:
+            return "ffdhe3072"
+        if size == 2048:
+            return "ffdhe2048"
+        return "ffdhe2048 & LESSER"
+    if re.search(r"kb|kyber|mlkem|hybrid", g, re.I):
+        return "(X25519)MLKEM768"
+    return g
+
+
+def _negotiated_group_info(group):
+    g = _normalized_negotiated_group_name(group)
+    if g == "(X25519)MLKEM768":
+        return g, "CNSA 2.0 Standard", "Low", "N.A."
+    if g == "X25519":
+        return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "secp256r1":
+        return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "secp384r1":
+        return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "secp521r1":
+        return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "ffdhe4096":
+        return g, "RFC 7919", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "ffdhe3072":
+        return g, "RFC 7919", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "ffdhe2048":
+        return g, "RFC 7919", "Medium", "Strongly Advised to ffdhe4096 or MLKEM786(or hybrid) for PQC"
+    if g == "ffdhe2048 & LESSER":
+        return g, "RFC 7919", "Critical", "Strongly Advised to ffdhe4096 or MLKEM786(or hybrid) for PQC"
+    if g == "secp224r1":
+        return g, "RFC 7919", "High", "Strongly Advised to X25519 or MLKEM786(or hybrid) for PQC"
+    if g == "secp192r1":
+        return g, "RFC 7919", "Critical", "Strongly Advised to X25519 or MLKEM786(or hybrid) for PQC"
+    return g, "NIST SP 800-186", "Medium", "Review negotiated group support and consider MLKEM or X25519 based hybrid transitions."
+
+
+def _collect_negotiated_groups(data):
+    groups = []
+    seen = set()
+
+    def push_name(name):
+        if not name:
+            return
+        norm = _normalized_negotiated_group_name(name)
+        if norm and norm not in seen:
+            seen.add(norm)
+            groups.append(norm)
+
+    # extract explicit group names from cipher key_exchange entries
+    for cs in data.get("cipher_suites", []):
+        if not isinstance(cs, dict):
+            continue
+        kx = str(cs.get("key_exchange", "") or "")
+        # also accept explicit curve lists inside each cipher suite
+        if isinstance(cs.get("ecdhe_curves"), list):
+            for c in cs.get("ecdhe_curves"):
+                push_name(c)
+        # some scanners put supported groups in different keys
+        if isinstance(cs.get("supported_groups"), list):
+            for c in cs.get("supported_groups"):
+                push_name(c)
+        # find explicit curve or ffdhe or pqc tokens inside the key exchange string
+        m = re.search(r"(X25519|SECP256R1|SECP384R1|SECP521R1|SECP224R1|SECP192R1|FFDHE\d+|KYBER|MLKEM)", kx, re.I)
+        if m:
+            push_name(m.group(0))
+        else:
+            # sometimes key_exchange contains forms like 'ECDHE-RSA' with curve in auth or elsewhere
+            # try parsing common curve tokens separated by non-alphanum
+            parts = re.split(r"[^A-Za-z0-9()_-]+", kx)
+            for p in parts:
+                if re.search(r"^(X25519|SECP\d+R\d+|FFDHE\d+|KYBER|MLKEM)$", p, re.I):
+                    push_name(p)
+
+    # include PQC negotiated group if available
+    pq = data.get("pqc_active_probe")
+    if isinstance(pq, dict):
+        ng = pq.get("negotiated_group", "") or ""
+        if ng:
+            # pq negotiated group may include multiple tokens
+            # split on commas or spaces and try to normalize each
+            for tok in re.split(r"[,;\s]+", str(ng)):
+                push_name(tok)
+
+    # include explicit ECDHE curve list if present in CBOM (common keys: 'ecdhe_curves' under top-level, 'tls', or 'pfs')
+    ecdhe_list = data.get("ecdhe_curves") or (data.get("tls", {}) or {}).get("ecdhe_curves") or (data.get("pfs", {}) or {}).get("ecdhe_curves")
+    if isinstance(ecdhe_list, list):
+        for c in ecdhe_list:
+            push_name(c)
+
+    return groups
+
+
 def _build_rs(wb, data):
     ws = wb.create_sheet("Posture Score")
     ws.sheet_view.showGridLines = False
@@ -527,7 +691,7 @@ def _build_rs(wb, data):
     ws.append(cols)
     for i, cell in enumerate(ws[ws.max_row], 1):
         cell.font = _font(C["COL_FG"], b=True); cell.fill = _f(C["COL_BG"]); cell.alignment = CTR; cell.border = BRD
-        ws.column_dimensions[get_column_letter(i)].width = [32, 34, 30, 13, 8, 12, 62][i-1]
+        ws.column_dimensions[get_column_letter(i)].width = [32, 34, 30, 13, 8, 12, 100][i-1]
     ws.row_dimensions[ws.max_row].height = 20; ws.freeze_panes = "A4"
 
     res = []
@@ -555,7 +719,7 @@ def _build_rs(wb, data):
             ws[mr][5].font = _font()
         res.append((s.name, rw, lo, hi, nm, s.weight))
 
-    s = Section("Protocol", 23)
+    s = Section("Protocol (Capability space)", 23)
     for p in data.get("protocols", []):
         if not isinstance(p, dict): continue
         pr, sup = p.get("protocol", ""), p.get("supported", False)
@@ -568,7 +732,7 @@ def _build_rs(wb, data):
         else: b = (-10, 10)
         
         act = f"disable {pr} immediately." if sup and pr in ("SSLv2", "SSLv3", "TLS 1.0", "TLS 1.1") else f"enable {pr}."
-        s.add(f"Protocol - {pr}", "Enabled" if sup else "Disabled", _p_std(pr), sv, _rec(sv, act), *b)
+        s.add(f"Protocol - {pr} (Capability space)", "Enabled" if sup else "Disabled", _p_std(pr), sv, _rec(sv, act), *b)
         
     vu = data.get("vulnerabilities")
     vu = vu if isinstance(vu, dict) else {}
@@ -580,69 +744,82 @@ def _build_rs(wb, data):
     _flush(s)
 
     s = Section("Certificate", 13)
-    certs = data.get("certificates", [{}])
-    c0 = certs[0] if isinstance(certs, list) and len(certs) > 0 and isinstance(certs[0], dict) else {}
-    
-    sig = c0.get("Signature Algorithm", "")
-    ksz = c0.get("Public Key Size", 0) or 0
-    cb_algo = ""
-    if isinstance(c0.get("cbom_authentication_layer"), dict):
-        cb_algo = c0["cbom_authentication_layer"].get("algorithm_name", "") or ""
-    cert_algo_ref = cb_algo if cb_algo else sig
-    key_type = _cert_key_type(sig, cert_algo_ref)
-    size_label = _cert_size_label(cert_algo_ref, ksz)
-    signature_label = _signature_label(sig)
-    algo_display = cert_algo_ref if cert_algo_ref else sig if sig else "Unknown"
-    
-    s.add("Public Key Cert", algo_display, "FIPS 204 / NIST SP 800-131A rev 2", _cert_key_severity(key_type), _cert_key_recommendation(key_type), -10, 10)
-    s.add("Public Keysize Cert", size_label, "NIST SP 800-131A rev 2", _cert_size_severity(size_label), _cert_size_recommendation(size_label), -10, 10)
-    s.add("Signature", signature_label, "NIST SP 800-131A rev 2", _sign_severity(signature_label), _signature_recommendation(signature_label), -10, 10)
-    
-    eku_raw = c0.get("Extended Key Usage", [])
-    eku = [k.lower() for k in eku_raw] if isinstance(eku_raw, list) else []
-    eku_sv = "Low" if any("server" in k for k in eku) else "High"
-    s.add("Extended Key Usage", _j(eku) or "None", "RFC 5280", eku_sv, _rec(eku_sv, "ensure serverAuth is present in EKU extensions."), -6, 10)
-    
-    es, n_a = c0.get("Expiration Status",""), c0.get("Valid Not After","")
-    x_sev, _ = _exp(es, n_a)
-    valid_label = "Valid" if isinstance(es, str) and "VALID" in es.upper() else "Invalid"
-    s.add("Certificate Validity / Expiry", f"{valid_label} ({n_a[:10] if n_a else ''})", "CAB Forum Baseline Requirements", x_sev, _rec(x_sev, "renew certificate immediately to avoid service outage."), -10, 10)
-    
-    ocsp_urls = c0.get("OCSP URLs") if isinstance(c0.get("OCSP URLs"), list) else []
-    ocsp_finding = "Supported and Valid" if ocsp_urls else "Not Supported"
-    ocsp_sv = "Low" if ocsp_urls else "High"
-    s.add("Certificate OCSP Staple", ocsp_finding, "RFC 6961", ocsp_sv, _rec(ocsp_sv, "have OCSP Stapling validated from trusted authorities."), -6, 5)
+    certs = [c for c in data.get("certificates", []) if isinstance(c, dict)]
+    if not certs:
+        certs = [{}]
 
-    ct = c0.get("Certificate Transparency","")
-    ct_lower = str(ct).lower()
-    if "3" in ct_lower or "sct present" in ct_lower:
-        ct_label = "3 SCT & more"
-    elif "2" in ct_lower:
-        ct_label = "2 SCT"
-    elif "1" in ct_lower:
-        ct_label = "1 SCT"
-    else:
-        ct_label = "Absent"
-    ct_sv = "Low" if ct_label == "3 SCT & more" else "Medium" if ct_label == "2 SCT" else "High"
-    s.add("Certificate Transparency", ct_label, "RFC 6962", ct_sv, _rec(ct_sv, "enable Certificate Transparency logging."), -6, 5)
-    
+    for idx, cert in enumerate(certs, 1):
+        sig = cert.get("Signature Algorithm", "")
+        raw_ksz = cert.get("Public Key Size", 0) or 0
+        ksz = _normalize_cert_key_size(cert.get("cbom_authentication_layer", {}).get("algorithm_name", "") or sig, raw_ksz)
+        cb_algo = ""
+        if isinstance(cert.get("cbom_authentication_layer"), dict):
+            cb_algo = cert["cbom_authentication_layer"].get("algorithm_name", "") or ""
+        cert_algo_ref = cb_algo if cb_algo else sig
+        algo_display = _cert_algo_display(sig, cb_algo, ksz)
+        key_type = _cert_key_type(sig, cert_algo_ref)
+        size_label = _cert_size_label(cert_algo_ref, ksz)
+        signature_label = _signature_label(sig)
+
+        s.add(f"Certificate {idx} - Public Key Cert", algo_display, "FIPS 204 / NIST SP 800-131A rev 2", _cert_key_severity(key_type), _cert_key_recommendation(key_type), -10, 10)
+        s.add(f"Certificate {idx} - Public Keysize Cert", size_label, "NIST SP 800-131A rev 2", _cert_size_severity(size_label), _cert_size_recommendation(size_label), -10, 10)
+        s.add(f"Certificate {idx} - Signature", signature_label, "NIST SP 800-131A rev 2", _sign_severity(signature_label), _signature_recommendation(signature_label), -10, 10)
+
+        eku_raw = cert.get("Extended Key Usage", [])
+        eku = [k.lower() for k in eku_raw] if isinstance(eku_raw, list) else []
+        eku_sv = "Low" if any("server" in k for k in eku) else "High"
+        s.add(f"Certificate {idx} - Extended Key Usage", _j(eku) or "None", "RFC 5280", eku_sv, _rec(eku_sv, "ensure serverAuth is present in EKU extensions."), -6, 10)
+
+        es, n_a = cert.get("Expiration Status", ""), cert.get("Valid Not After", "")
+        x_sev, _ = _exp(es, n_a)
+        valid_label = "Valid" if isinstance(es, str) and "VALID" in es.upper() else "Invalid"
+        date_display = ""
+        if n_a:
+            try:
+                dt = datetime.fromisoformat(str(n_a).replace("Z", "+00:00"))
+                date_display = dt.strftime("%d-%b-%Y")
+            except Exception:
+                date_display = str(n_a)[:10]
+        rec_text = "renew certificate immediately to avoid service outage."
+        if x_sev == "Medium":
+            rec_text = "Please renew certificate soon as it expires within 30 days."
+        s.add(f"Certificate {idx} - Validity / Expiry", f"{valid_label} ({date_display})", "CAB Forum Baseline Requirements", x_sev, _rec(x_sev, rec_text), -10, 10)
+
+        ocsp_urls = cert.get("OCSP URLs") if isinstance(cert.get("OCSP URLs"), list) else []
+        ocsp_finding = "Supported and Valid" if ocsp_urls else "Not Supported"
+        ocsp_sv = "Low" if ocsp_urls else "High"
+        s.add(f"Certificate {idx} - OCSP Staple", ocsp_finding, "NIST SP 800-52r2", ocsp_sv, _rec(ocsp_sv, "have OCSP Stapling validated from trusted authorities."), -6, 5)
+
+        ct = cert.get("Certificate Transparency", "")
+        ct_lower = str(ct).lower()
+        if "3" in ct_lower or "sct present" in ct_lower:
+            ct_label = "3 SCT & more"
+        elif "2" in ct_lower:
+            ct_label = "2 SCT"
+        elif "1" in ct_lower:
+            ct_label = "1 SCT"
+        else:
+            ct_label = "Absent"
+        ct_sv = "Low" if ct_label == "3 SCT & more" else "Medium" if ct_label == "2 SCT" else "High"
+        s.add(f"Certificate {idx} - Certificate Transparency", ct_label, "Google Policy", ct_sv, _rec(ct_sv, "enable Certificate Transparency logging."), -6, 5)
+
     tr = data.get("trust_stores")
     tr = tr if isinstance(tr, dict) else {}
     trusted = any(v.get("is_trusted") for v in tr.values() if isinstance(v, dict))
     chain_label = "Trusted chain" if trusted else ("Self-Signed" if len(certs) == 1 else "Chain integrity lost")
     chain_sv = "Low" if trusted else "High"
-    s.add("Certificate Chain / Trust Store", chain_label, "RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
+    s.add("Certificate Chain / Trust Store", chain_label, "PKI BMP, RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
     _flush(s)
 
     s = Section("Extensions", 3)
     tx = data.get("tls_extensions")
     tx = tx if isinstance(tx, list) else []
     ext_data = [
-        ("SNI", "server name", "RFC 6066", "implement SNI for multi-tenant hosting to ensure correct certificate routing."),
-        ("ALPN", "application layer", "RFC 7301", "enable ALPN to negotiate application protocols securely."),
-        ("Extended Master Secret", "extended master", "RFC 7627", "enable EMS to prevent MITM session hash vulnerabilities."),
+        ("SNI", "server name", "NIST SP 800-52 Rev.2/RFC 6066", "implement SNI for multi-tenant hosting to ensure correct certificate routing."),
+        ("ALPN", "application layer", "NIST SP 800-52 Rev.2/RFC 7301", "enable ALPN to negotiate application protocols securely."),
+        ("Extended Master Secret", "extended master", "NIST SP 800-52 Rev.2/RFC 7627", "enable EMS to prevent MITM session hash vulnerabilities."),
         ("Session Ticket", "session ticket", "RFC 5077", "ensure keys rotate frequently if session tickets are enabled."),
-        ("Renegotiation Info", "renegotiation", "RFC 5746", "enable secure renegotiation (RFC 5746) to prevent injection attacks."),
+        ("Renegotiation Info", "renegotiation", "CVE-2009-3555/ RFC 5746", "enable secure renegotiation (RFC 5746) to prevent injection attacks."),
         ("EC Point Formats", "EC point", "RFC 4492", "support standard ECC point formats for client compatibility."),
         ("Supported Versions", "supported version", "RFC 8446", "ensure TLS 1.3 supported versions match intended protocols.")
     ]
@@ -742,10 +919,22 @@ def _build_rs(wb, data):
     ws[ws.max_row][0].alignment = WRP; ws[ws.max_row][6].alignment = WRP
     ws[ws.max_row][5].number_format = '0.0%'
 
+    s = Section("Negotiated Groups (Capability space)", 0)
+    groups = _collect_negotiated_groups(data)
+    if groups:
+        for idx, group in enumerate(groups):
+            param = "Negotiated Groups (Curves, field DH, PQC)" if idx == 0 else ""
+            label, std, sev, rec = _negotiated_group_info(group)
+            s.add(param, label, std, sev, rec, -2, 5)
+    else:
+        s.add("Negotiated Groups (Curves, field DH, PQC)", "None found", "N/A", "N/A", "N.A.", -2, 5)
+    _flush(s)
+
     s = Section("PQC", 16)
     pq = data.get("pqc_active_probe")
     pq = pq if isinstance(pq, dict) else {}
     
+    c0 = certs[0] if certs else {}
     cb = c0.get("cbom_authentication_layer")
     cb = cb if isinstance(cb, dict) else {}
     
@@ -824,13 +1013,13 @@ def _build_rs(wb, data):
     ws[fr][0].alignment = WRP
 
 def _build_cs(wb, data):
-    ws = wb.create_sheet("Cipher Suites")
+    ws = wb.create_sheet("Cipher Suites (Capability)")
     ws.sheet_view.showGridLines = False
     cl = ["#", "Cipher Suite", "Protocol", "Key Exchange", "Authentication", "Bulk Encryption", "Handshake Hash", "Perfect Forward Secrecy", "Bits", "Severity", "Score", "Recommendation"]
     ws.merge_cells("A1:L1")
-    t = ws["A1"]; t.value = "Cipher Suite Assessment"; t.font = _font(C["TITLE_FG"], b=True, s=12); t.fill = _f(C["TITLE_BG"]); t.alignment = CTR; t.border = BRD
+    t = ws["A1"]; t.value = "Cipher Suite Assessment (Capability space)"; t.font = _font(C["TITLE_FG"], b=True, s=12); t.fill = _f(C["TITLE_BG"]); t.alignment = CTR; t.border = BRD
     ws.append(cl); hr = ws.max_row
-    widths = [4, 46, 10, 15, 15, 18, 30, 25, 8, 12, 8, 55]
+    widths = [4, 46, 10, 15, 15, 18, 30, 25, 8, 12, 8, 120]
     for i, c in enumerate(ws[hr], 1): 
         c.font = _font(C["COL_FG"], b=True); c.fill = _f(C["COL_BG"]); c.alignment = CTR; c.border = BRD
         ws.column_dimensions[get_column_letter(i)].width = widths[i-1]
