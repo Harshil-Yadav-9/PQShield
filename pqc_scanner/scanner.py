@@ -15,8 +15,9 @@ from sslyze import (
 )
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from cryptography.x509.oid import ExtensionOID, AuthorityInformationAccessOID, ObjectIdentifier
 
+from cryptography.x509.oid import ExtensionOID, AuthorityInformationAccessOID, ObjectIdentifier
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, dsa, ed448, ed25519
 from .models import ScanResults, ScanMetadata, ProtocolSupport, CipherCategory
 from .analyzers import (
     generate_pqc_report, simulate_modern_clients,
@@ -912,6 +913,18 @@ class TLSScanner:
                     )
 
                     parsed = parse_cipher_details(c_name, iana_hex)
+                    actual_mac = parsed.get("mac", "Unknown")
+                    c_upper = c_name.upper()
+                    if "SHA384" in c_upper:
+                        actual_mac = "SHA384"
+                    elif "SHA256" in c_upper:
+                        actual_mac = "SHA256"
+                    elif "SHA512" in c_upper or "SHA3" in c_upper:
+                        actual_mac = "SHA512 or SHA3"
+                    elif c_upper.endswith("_SHA") or "SHA1" in c_upper:
+                        actual_mac = "SHA1"
+                    elif "MD5" in c_upper:
+                        actual_mac = "MD5"
                     if parsed["key_exchange"] in ("ECDHE", "DHE"):
                         pfs_ciphers.append(c_name)
 
@@ -923,7 +936,7 @@ class TLSScanner:
                             "key_exchange": parsed["key_exchange"],
                             "authentication": parsed["authentication"],
                             "bulk_encryption": parsed["bulk_encryption"],
-                            "mac": parsed["mac"],
+                            "mac": actual_mac,
                             "aead": parsed["aead"],
                             "forward_secrecy": parsed["forward_secrecy"],
                             "security_bits": getattr(
@@ -983,17 +996,29 @@ class TLSScanner:
                         )
                         pk_size = getattr(parsed_cert, "key_size", None)
 
+                        pk_algo = "Unknown"
+                        if isinstance(parsed_cert, rsa.RSAPublicKey):
+                            pk_algo = "RSA"
+                        elif isinstance(parsed_cert, ec.EllipticCurvePublicKey):
+                            pk_algo = "ECDSA"
+                        elif isinstance(parsed_cert, dsa.DSAPublicKey):
+                            pk_algo = "DSA"
+                        elif isinstance(parsed_cert, ed25519.Ed25519PublicKey):
+                            pk_algo = "Ed25519"
+                        elif isinstance(parsed_cert, ed448.Ed448PublicKey):
+                            pk_algo = "Ed448"
+
+                        ext_data = self._extract_extensions(cert)
+                        sig_alg_name = getattr(getattr(cert, "signature_algorithm_oid", None), "_name", "Unknown")
+
                         cert_dict = {
                             "Common Name (CN)": cert.subject.rfc4514_string(),
                             "Serial Number": str(cert.serial_number),
                             "Valid Not Before": cert.not_valid_before_utc.isoformat(),
                             "Valid Not After": cert.not_valid_after_utc.isoformat(),
-                            "Expiration Status": (
-                                "EXPIRED"
-                                if datetime.now(timezone.utc) > cert.not_valid_after_utc
-                                else "VALID"
-                            ),
+                            "Expiration Status": "EXPIRED" if datetime.now(timezone.utc) > cert.not_valid_after_utc else "VALID",
                             "Signature Algorithm": sig_alg_name,
+                            "Public Key Algorithm": pk_algo,
                             "Public Key Size": pk_size,
                             **ext_data,
                         }

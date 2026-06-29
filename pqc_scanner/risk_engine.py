@@ -496,7 +496,7 @@ def _cipher_signature_recommendation(cipher_name, mac, bits=0):
     if "SHA512" in s or "SHA3" in s or (m == "SHA" and bits == 512):
         return "SHA-512 or SHA-3", "NIST SP 800-131A Rev. 2", "N.A."
     if "SHA384" in s or (m == "SHA" and bits == 384):
-        return "SHA-384 or SHA -3", "NIST SP 800-131A Rev. 2", "N.A."
+        return "SHA-384 or SHA-3", "NIST SP 800-131A Rev. 2", "N.A."
     if "SHA256" in s or (m == "SHA" and bits == 256):
         return "SHA-256", "NIST SP 800-131A Rev. 2", "N.A."
     if "SHA224" in s or (m == "SHA" and bits == 224):
@@ -739,8 +739,8 @@ def _build_rs(wb, data):
     fb = vu.get("Fallback_SCSV")
     fb = fb if isinstance(fb, dict) else {}
     
-    fb_sv = "Low" if fb.get("is_supported") else ("High" if fb.get("legacy_protocol_present") else "Acceptable")
-    s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -2, 5)
+    fb_sv = "Low" if fb.get("is_supported") else ("Critical" if fb.get("legacy_protocol_present") else "Low")
+    s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -10, 10)
     _flush(s)
 
     s = Section("Certificate", 13)
@@ -751,12 +751,13 @@ def _build_rs(wb, data):
     for idx, cert in enumerate(certs, 1):
         sig = cert.get("Signature Algorithm", "")
         raw_ksz = cert.get("Public Key Size", 0) or 0
-        ksz = _normalize_cert_key_size(cert.get("cbom_authentication_layer", {}).get("algorithm_name", "") or sig, raw_ksz)
+        pk_algo = cert.get("Public Key Algorithm", "")
         cb_algo = ""
         if isinstance(cert.get("cbom_authentication_layer"), dict):
             cb_algo = cert["cbom_authentication_layer"].get("algorithm_name", "") or ""
-        cert_algo_ref = cb_algo if cb_algo else sig
-        algo_display = _cert_algo_display(sig, cb_algo, ksz)
+        cert_algo_ref = pk_algo if pk_algo else (cb_algo if cb_algo else sig)
+        ksz = _normalize_cert_key_size(cert_algo_ref, raw_ksz)
+        algo_display = _cert_algo_display(sig, cert_algo_ref, ksz)
         key_type = _cert_key_type(sig, cert_algo_ref)
         size_label = _cert_size_label(cert_algo_ref, ksz)
         signature_label = _signature_label(sig)
@@ -787,7 +788,7 @@ def _build_rs(wb, data):
 
         ocsp_urls = cert.get("OCSP URLs") if isinstance(cert.get("OCSP URLs"), list) else []
         ocsp_finding = "Supported and Valid" if ocsp_urls else "Not Supported"
-        ocsp_sv = "Low" if ocsp_urls else "High"
+        ocsp_sv = "Acceptable" if ocsp_urls else "High"
         s.add(f"Certificate {idx} - OCSP Staple", ocsp_finding, "NIST SP 800-52r2", ocsp_sv, _rec(ocsp_sv, "have OCSP Stapling validated from trusted authorities."), -6, 5)
 
         ct = cert.get("Certificate Transparency", "")
@@ -800,7 +801,7 @@ def _build_rs(wb, data):
             ct_label = "1 SCT"
         else:
             ct_label = "Absent"
-        ct_sv = "Low" if ct_label == "3 SCT & more" else "Medium" if ct_label == "2 SCT" else "High"
+        ct_sv = "Acceptable" if ct_label == "3 SCT & more" else "Medium" if ct_label == "2 SCT" else "High"
         s.add(f"Certificate {idx} - Certificate Transparency", ct_label, "Google Policy", ct_sv, _rec(ct_sv, "enable Certificate Transparency logging."), -6, 5)
 
     tr = data.get("trust_stores")
@@ -893,7 +894,8 @@ def _build_rs(wb, data):
     }
     for cn, (bs, std, act, bnd) in c_meta.items():
         pr = cm.get(cn, False)
-        sv = "Low" if cn=="Strong Encryption (AEAD)" and pr else "High" if cn=="Strong Encryption (AEAD)" else bs if pr else "Low"
+        good_sv = "Low" if bnd[1] == 10 else "Acceptable"
+        sv = good_sv if cn=="Strong Encryption (AEAD)" and pr else "High" if cn=="Strong Encryption (AEAD)" else bs if pr else good_sv
         s.add(cn, "Present" if pr else "Absent", std, sv, _rec(sv, act), *bnd)
     _flush(s)
 
