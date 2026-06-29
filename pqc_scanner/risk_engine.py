@@ -739,8 +739,8 @@ def _build_rs(wb, data):
     fb = vu.get("Fallback_SCSV")
     fb = fb if isinstance(fb, dict) else {}
     
-    fb_sv = "Low" if fb.get("is_supported") else ("Critical" if fb.get("legacy_protocol_present") else "Low")
-    s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -10, 10)
+    fb_sv = "Acceptable" if fb.get("is_supported") else ("High" if fb.get("legacy_protocol_present") else "Acceptable")
+    s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -2, 5)
     _flush(s)
 
     s = Section("Certificate", 13)
