@@ -1031,7 +1031,8 @@ def _build_cs(wb, data):
     for i, cs in enumerate(cs_list, 1):
         if not isinstance(cs, dict): continue
         nm = cs.get("cipher_name","" ).upper()
-        kx = str(cs.get("key_exchange","")) or ""
+        raw_kx = str(cs.get("key_exchange","")) or ""
+        kx = raw_kx.upper()
         auth = str(cs.get("authentication","")) or ""
         pfs = cs.get("forward_secrecy")
         sec_bits = cs.get("security_bits", 0) or 0
@@ -1049,6 +1050,8 @@ def _build_cs(wb, data):
             sv = "Low"
         else:
             sv = "Acceptable" if cs.get("aead") else "Medium"
+        if sv == "Acceptable" and "ECDHE" in kx:
+            sv = "Low"
         key_label, key_std, key_rec = _cipher_key_exchange_recommendation(kx, sec_bits)
         sig_label, sig_std, sig_rec = _cipher_signature_recommendation(nm, cs.get("mac",""), sec_bits)
         bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption",""), cs.get("mac",""))
