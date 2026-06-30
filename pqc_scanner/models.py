@@ -9,7 +9,7 @@ class ScanMetadata(BaseModel):
     scan_start: str
     scan_end: str
     scan_duration_seconds: float
-    scanner_version: str = "17.0.0-Fallback-Architecture"
+    scanner_version: str = "1.0"
 
 
 class ProtocolSupport(BaseModel):
