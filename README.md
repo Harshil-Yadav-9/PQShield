@@ -43,9 +43,7 @@ PQShield is a PQC-aware TLS scanner and component bill of materials (CBOM) gener
 python -m pip install -r requirements.txt
 ```
 
-> Note: This repository does not include a `requirements.txt` file, so install the packages used by the code manually if needed.
-
-Suggested packages:
+Required packages:
 
 - `sslyze`
 - `cryptography`
@@ -57,7 +55,7 @@ Suggested packages:
 Run the scanner from the repository root with a target host or IP.
 
 ```powershell
-python cli.py example.com:443 -o cbom_results.json -r ssllabs_report.xlsx
+python cli.py example.com -o cbom_example.json -r audit_example.xlsx
 ```
 
 CLI options:

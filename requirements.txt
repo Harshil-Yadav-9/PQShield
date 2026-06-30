@@ -1,0 +1,4 @@
+sslyze
+cryptography
+openpyxl
+pydantic
