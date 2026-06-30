@@ -541,6 +541,8 @@ def _normalized_negotiated_group_name(group):
         return "(X25519)MLKEM768"
     if re.search(r"\bx25519\b", g, re.I):
         return "X25519"
+    if re.search(r"\bx448\b", g, re.I):
+        return "X448"
     if re.search(r"\bsecp256r1\b", g, re.I):
         return "secp256r1"
     if re.search(r"\bsecp384r1\b", g, re.I):
@@ -571,6 +573,8 @@ def _negotiated_group_info(group):
     if g == "(X25519)MLKEM768":
         return g, "CNSA 2.0 Standard", "Low", "N.A."
     if g == "X25519":
+        return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
+    if g == "X448":
         return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
     if g == "secp256r1":
         return g, "NIST SP 800-186", "Acceptable", "Recommended to MLKEM786(or hybrid) for PQC"
@@ -660,6 +664,15 @@ def _build_rs(wb, data):
     sm = sm if isinstance(sm, dict) else {}
     t_val = sm.get('target') or data.get('target', {})
     
+    published = sm.get('published') or sm.get('published_at') or sm.get('publish_time') or sm.get('publish_datetime') or sm.get('timestamp')
+    start_time = sm.get('start_time') or sm.get('scan_start') or sm.get('start_date') or sm.get('start')
+    elapsed = sm.get('scan_duration_seconds') or sm.get('elapsed_seconds') or sm.get('elapsed') or sm.get('elapsed_secs') or sm.get('runtime_seconds')
+    if elapsed is not None:
+        try:
+            elapsed = f"{float(elapsed):.2f} sec"
+        except Exception:
+            elapsed = str(elapsed)
+
     if isinstance(t_val, dict):
         host_name = t_val.get('hostname', str(t_val.get('host', 'Unknown')))
         ip_addr = t_val.get('ip', '')
@@ -676,12 +689,20 @@ def _build_rs(wb, data):
     c.font = _title_font(C["TITLE_FG"], b=False, s=14, u="single"); c.fill = _f(C["TITLE_BG"])
     c.alignment = CTR; c.border = BRD; ws.row_dimensions[1].height = 28
 
-    ws.merge_cells("A2:G2")
+    
+    start_label = f"Published: {start_time}" if start_time else "Published: N/A"
+    elapsed_label = f"Elapsed Seconds: {elapsed}" if elapsed else "Elapsed Seconds: N/A"
+
     ws["A2"].value = f"Hostname: {host_name}"
     ws["A2"].font = _font(C["COL_FG"], s=11)
     ws["A2"].alignment = WRP; ws["A2"].border = BRD
+    ws["B2"].value = start_label
+    ws["B2"].font = _font(C["COL_FG"], s=11)
+    ws["B2"].alignment = WRP; ws["B2"].border = BRD
+    ws["C2"].value = elapsed_label
+    ws["C2"].font = _font(C["COL_FG"], s=11)
+    ws["C2"].alignment = WRP; ws["C2"].border = BRD
 
-    ws.merge_cells("A3:G3")
     ws["A3"].value = f"IP: {ip_addr}"
     ws["A3"].font = _font(C["COL_FG"], s=11)
     ws["A3"].alignment = WRP; ws["A3"].border = BRD
@@ -713,8 +734,8 @@ def _build_rs(wb, data):
             ws[mr][4].alignment = RGT; ws[mr][4].font = _font();
             ws[mr][4].number_format = '0.0;-0.0;0.0'
             contribution = round(v["score"] * v["wt"] / 10.0, 2)
-            ws[mr][5].value = contribution / 100.0
-            ws[mr][5].number_format = '+0.00%;-0.00%;+0.00%'
+            ws[mr][5].value = abs(contribution) / 100.0
+            ws[mr][5].number_format = '+0.00%;+0.00%;+0.00%'
             ws[mr][5].alignment = RGT
             ws[mr][5].font = _font()
         res.append((s.name, rw, lo, hi, nm, s.weight))
@@ -956,7 +977,7 @@ def _build_rs(wb, data):
         else:
             kx_finding = f"Hybrid PQC supported: {neg_group}" if neg_group_uc else "Hybrid PQC supported"
     else:
-        kx_finding = "Hybrid PQC not supported"
+        kx_finding = "PQC/Hybrid PQC not supported"
     s.add("PQC Key Encapsulation", kx_finding, "NIST FIPS 203", kx_sv, _rec(kx_sv, "plan infrastructure migration to ML-KEM (FIPS 203)."), -2, 10)
 
     if ds_pqc:
@@ -1031,7 +1052,8 @@ def _build_cs(wb, data):
     for i, cs in enumerate(cs_list, 1):
         if not isinstance(cs, dict): continue
         nm = cs.get("cipher_name","" ).upper()
-        kx = str(cs.get("key_exchange","")) or ""
+        raw_kx = str(cs.get("key_exchange","")) or ""
+        kx = raw_kx.upper()
         auth = str(cs.get("authentication","")) or ""
         pfs = cs.get("forward_secrecy")
         sec_bits = cs.get("security_bits", 0) or 0
@@ -1049,6 +1071,8 @@ def _build_cs(wb, data):
             sv = "Low"
         else:
             sv = "Acceptable" if cs.get("aead") else "Medium"
+        if sv == "Acceptable" and "ECDHE" in kx:
+            sv = "Low"
         key_label, key_std, key_rec = _cipher_key_exchange_recommendation(kx, sec_bits)
         sig_label, sig_std, sig_rec = _cipher_signature_recommendation(nm, cs.get("mac",""), sec_bits)
         bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption",""), cs.get("mac",""))

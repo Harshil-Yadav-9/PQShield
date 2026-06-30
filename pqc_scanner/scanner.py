@@ -13,6 +13,7 @@ from sslyze import (
     Scanner, ServerScanRequest, ServerNetworkLocation,
     ScanCommand, ScanCommandAttemptStatusEnum
 )
+from nassl.ephemeral_key_info import DhEphemeralKeyInfo, EcDhEphemeralKeyInfo
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 
@@ -928,12 +929,32 @@ class TLSScanner:
                     if parsed["key_exchange"] in ("ECDHE", "DHE"):
                         pfs_ciphers.append(c_name)
 
+                    key_exchange_label = parsed["key_exchange"]
+                    dh_prime_bits = None
+                    dh_generator = None
+                    ecdhe_curve = None
+                    ephemeral_key = getattr(suite, "ephemeral_key", None)
+                    if isinstance(ephemeral_key, EcDhEphemeralKeyInfo):
+                        ecdhe_curve = ephemeral_key.curve_name
+                        key_exchange_label = f"ECDHE ({ecdhe_curve})"
+                    elif isinstance(ephemeral_key, DhEphemeralKeyInfo):
+                        if isinstance(ephemeral_key.prime, (bytes, bytearray)):
+                            dh_prime_bits = len(ephemeral_key.prime) * 8
+                        if isinstance(ephemeral_key.generator, (bytes, bytearray)):
+                            dh_generator = int.from_bytes(ephemeral_key.generator, "big")
+                        if dh_prime_bits and dh_generator == 2 and dh_prime_bits in (2048, 3072, 4096):
+                            key_exchange_label = f"DHE (ffdhe{dh_prime_bits})"
+                        elif dh_prime_bits:
+                            key_exchange_label = f"DHE ({dh_prime_bits}-bit)"
+                        else:
+                            key_exchange_label = "DHE"
+
                     ciphers.append(
                         {
                             "cipher_name": c_name,
                             "IANA_ID": parsed["IANA_ID"],
                             "protocol": proto_name,
-                            "key_exchange": parsed["key_exchange"],
+                            "key_exchange": key_exchange_label,
                             "authentication": parsed["authentication"],
                             "bulk_encryption": parsed["bulk_encryption"],
                             "mac": actual_mac,
@@ -942,6 +963,9 @@ class TLSScanner:
                             "security_bits": getattr(
                                 getattr(suite, "cipher_suite", None), "key_size", 0
                             ),
+                            "dh_prime_bits": dh_prime_bits,
+                            "dh_generator": dh_generator,
+                            "ecdh_curve": ecdhe_curve,
                         }
                     )
             protocols.append(ProtocolSupport(protocol=proto_name, supported=is_supported))
@@ -955,6 +979,12 @@ class TLSScanner:
             and getattr(curve_attempt.result, "supported_curves", None)
         ):
             curves = [c.name for c in curve_attempt.result.supported_curves]
+
+        if curves:
+            curve_label = f"ECDHE ({', '.join(curves)})"
+            for cipher in ciphers:
+                if cipher.get("key_exchange") == "ECDHE":
+                    cipher["key_exchange"] = curve_label
 
         # Certificates
         certs_data = []
