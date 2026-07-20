@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---- Auth.js required models (PrismaAdapter) ----
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String? // set only for email/password accounts; null for OAuth-only users
+
+  accounts Account[]
+  sessions Session[]
+  scans    Scan[]
+
+  createdAt DateTime @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Standard Auth.js table — also reused for our own email/password signup
+// verification flow: identifier = email, token = sha256 hash of the token
+// mailed to the user (never the raw token, so a DB read alone can't be used
+// to verify an account), expires = 24h from signup/resend.
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---- App data ----
+
+// Only signed-in users' scans are stored here — this is what "My scans" and
+// Postgres/Neon persistence cover. Guests get PQShield's free-scan quota
+// with their scans kept entirely in their browser's localStorage (see
+// src/lib/guest-scans.ts) and are never written to this table.
+model Scan {
+  id        String   @id // reuse the report_builder-generated slug id
+  hostname  String
+  report    Json // full ScanReport JSON as returned by the scanner service
+  raw       Json? // raw CBOM scan JSON (same shape as cbom_results.json) - source for Excel/JSON export
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

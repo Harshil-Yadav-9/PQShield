@@ -5,6 +5,170 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 SCORE = {"Low": 10, "Acceptable": 5, "Medium": -2, "High": -6, "Critical": -10}
+CIPHER_SUITE_SCORING_MODE_SIA_JSON = 1
+CIPHER_SUITE_SCORING_MODE_LEGACY = 2
+CIPHER_SUITE_SCORING_MODE = CIPHER_SUITE_SCORING_MODE_SIA_JSON
+SIA_JSON_PATH = os.path.join(os.path.dirname(__file__), "sia.json")
+
+
+def _load_sia_cipher_map():
+    try:
+        with open(SIA_JSON_PATH, encoding="utf-8") as fh:
+            return {str(k).upper(): str(v).strip() for k, v in json.load(fh).items() if k}
+    except Exception:
+        return {}
+
+
+SIA_CIPHER_SEVERITY_MAP = _load_sia_cipher_map()
+
+
+def _normalize_cipher_suite_name(value):
+    return re.sub(r"[^A-Z0-9]+", "_", str(value or "").upper()).strip("_")
+
+
+def _normalize_group_name(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if re.search(r"\bx25519\b", text, re.I):
+        return "X25519"
+    if re.search(r"\bx448\b", text, re.I):
+        return "X448"
+    if re.search(r"\bsecp256r1\b|\bprime256v1\b|\bp-256\b", text, re.I):
+        return "secp256r1"
+    if re.search(r"\bsecp384r1\b|\bp-384\b", text, re.I):
+        return "secp384r1"
+    if re.search(r"\bsecp521r1\b|\bp-521\b", text, re.I):
+        return "secp521r1"
+    if re.search(r"\bsecp256k1\b", text, re.I):
+        return "secp256k1"
+    if re.search(r"\bbrainpoolp(?:256|384|512)r1\b", text, re.I):
+        return "brainpool"
+    if re.search(r"\bsecp224r1\b", text, re.I):
+        return "secp224r1"
+    if re.search(r"\bsecp192r1\b|\bsecp160r1\b", text, re.I):
+        return "secp160r1"
+    if re.search(r"\bffdhe(\d+)\b", text, re.I):
+        size = int(re.search(r"\bffdhe(\d+)\b", text, re.I).group(1))
+        return f"ffdhe{size}"
+    if re.search(r"\bsect163\b|\bsect193\b|\bsect233\b|\bsect239\b|charateristic-2|characteristic-2|char2", text, re.I):
+        return "binary_curves"
+    if re.search(r"\bgc256a\b|\bgc256b\b|\bgc512a\b|gost", text, re.I):
+        return "gost_curves"
+    if re.search(r"arbitrary_explicit_prime_curves|arbitrary_explicit_char2_curves", text, re.I):
+        return "arbitrary_explicit_curves"
+    return text
+
+
+def _group_severity_from_name(group_name):
+    group = _normalize_group_name(group_name)
+    if group in {"X25519", "X448", "secp256r1", "secp384r1", "secp521r1"}:
+        return "Low"
+    if group == "brainpool":
+        return "Acceptable"
+    if group == "secp256k1":
+        return "Medium"
+    if group == "ffdhe2048":
+        return "Acceptable"
+    if group in {"ffdhe3072", "ffdhe4096", "ffdhe6144", "ffdhe8192"}:
+        return "Low"
+    if group.startswith("ffdhe"):
+        return "Critical"
+    if group in {"secp160r1", "secp192r1", "secp224r1"}:
+        return "Critical"
+    if group == "binary_curves":
+        return "High"
+    if group == "gost_curves":
+        return "Medium"
+    if group == "arbitrary_explicit_curves":
+        return "High"
+    return None
+
+
+def _legacy_cipher_suite_severity(cipher_name, suite_data=None):
+    suite_data = suite_data or {}
+    nm = str(cipher_name or "").upper()
+    raw_kx = str(suite_data.get("key_exchange", "") or "")
+    kx = raw_kx.upper()
+    auth = str(suite_data.get("authentication", "") or "")
+    pfs = suite_data.get("forward_secrecy")
+    sec_bits = suite_data.get("security_bits", 0) or 0
+    dh_bits = suite_data.get("dh_prime_bits", 0) or 0
+    if any(x in nm for x in ("NULL", "ANON", "EXPORT", "RC4")):
+        return "Critical"
+    if "RSA" in kx and "ECDHE" not in kx and "DHE" not in kx:
+        return "High"
+    if "STATIC" in kx or ("DH" in kx and "ECDHE" not in kx and "DHE" not in kx):
+        return "High"
+    if "DHE" in kx and "ECDHE" not in kx:
+        return "Acceptable" if any(d in nm for d in ("DHE_RSA", "DHE_DSS", "DHE_ANON")) and dh_bits >= 2048 else "High"
+    if "ECDHE" in kx and "MLKEM" not in kx and "DHE" not in kx:
+        return "Low"
+    if any(x in kx for x in ("MLKEM", "KYBER", "HYBRID")):
+        return "Low"
+    if suite_data.get("aead"):
+        return "Acceptable"
+    if not pfs:
+        return "Medium"
+    return "Acceptable"
+
+
+def resolve_cipher_suite_severity(cipher_name, suite_data=None, mode=None):
+    suite_data = suite_data or {}
+    mode = mode if mode is not None else CIPHER_SUITE_SCORING_MODE
+    if mode == CIPHER_SUITE_SCORING_MODE_LEGACY:
+        return _legacy_cipher_suite_severity(cipher_name, suite_data)
+
+    raw_name = str(cipher_name or "")
+    if raw_name:
+        sia_sev = SIA_CIPHER_SEVERITY_MAP.get(_normalize_cipher_suite_name(raw_name))
+        if sia_sev:
+            return sia_sev
+
+    key_exchange = str(suite_data.get("key_exchange", "") or "").upper()
+    cipher_name_upper = raw_name.upper()
+    if "DHE" in key_exchange or "DHE" in cipher_name_upper:
+        dh_bits = suite_data.get("dh_prime_bits") or suite_data.get("dh_bits") or 0
+        if dh_bits:
+            dh_bits = int(dh_bits)
+            if dh_bits < 2048:
+                return "Critical"
+            if dh_bits < 3072:
+                return "Acceptable"
+            return "Low"
+
+    curve_sources = []
+    for key in ("ecdh_curve", "negotiated_curve", "curve", "supported_curve", "supported_groups"):
+        value = suite_data.get(key)
+        if isinstance(value, list):
+            curve_sources.extend(value)
+        elif value:
+            curve_sources.append(value)
+
+    for curve in curve_sources:
+        sev = _group_severity_from_name(curve)
+        if sev:
+            return sev
+
+    dh_bits = suite_data.get("dh_prime_bits") or suite_data.get("dh_bits") or 0
+    if dh_bits:
+        dh_bits = int(dh_bits)
+        if dh_bits < 2048:
+            return "Critical"
+        if dh_bits < 3072:
+            return "Acceptable"
+        return "Low"
+
+    rsa_key_size = suite_data.get("rsa_key_size") or suite_data.get("rsa_bits") or 0
+    if rsa_key_size:
+        rsa_key_size = int(rsa_key_size)
+        if rsa_key_size < 2048:
+            return "High"
+        return "Acceptable"
+
+    return "High"
 
 SEV_STYLE = {
     "Critical":   ("FFFFC7CE", "FF9C0006"),
@@ -493,7 +657,7 @@ def _cipher_signature_recommendation(cipher_name, mac, bits=0):
         return f"SHA-{bits}", "NIST SP 800-131A Rev. 2", "Strongly Advised to SHA-256(or SHA-3) or above"
     if m == "SHA1" or (m == "SHA" and bits == 1):
         return "SHA-1", "NIST SP 800-131A Rev. 2", "Strongly Advised to SHA-256(or SHA-3) or above"
-    if "SHA512" in s or "SHA3" in s or (m == "SHA" and bits == 512):
+    if "SHA512" in s or (m == "SHA" and bits == 512):
         return "SHA-512 or SHA-3", "NIST SP 800-131A Rev. 2", "N.A."
     if "SHA384" in s or (m == "SHA" and bits == 384):
         return "SHA-384 or SHA-3", "NIST SP 800-131A Rev. 2", "N.A."
@@ -812,6 +976,11 @@ def _build_rs(wb, data):
         ocsp_sv = "Acceptable" if ocsp_urls else "High"
         s.add(f"Certificate {idx} - OCSP Staple", ocsp_finding, "NIST SP 800-52r2", ocsp_sv, _rec(ocsp_sv, "have OCSP Stapling validated from trusted authorities."), -6, 5)
 
+        ca_issuers = cert.get("CA Issuers") if isinstance(cert.get("CA Issuers"), list) else []
+        ca_finding = _j(ca_issuers) if ca_issuers else "Not Present"
+        ca_sv = "Acceptable" if ca_issuers else "Medium"
+        s.add(f"Certificate {idx} - CA Issuers", ca_finding, "RFC 5280 (Authority Information Access)", ca_sv, _rec(ca_sv, "publish the issuing CA certificate via the CA Issuers AIA extension so clients can build the chain."), -2, 5)
+
         ct = cert.get("Certificate Transparency", "")
         ct_lower = str(ct).lower()
         if "3" in ct_lower or "sct present" in ct_lower:
@@ -830,8 +999,46 @@ def _build_rs(wb, data):
     trusted = any(v.get("is_trusted") for v in tr.values() if isinstance(v, dict))
     chain_label = "Trusted chain" if trusted else ("Self-Signed" if len(certs) == 1 else "Chain integrity lost")
     chain_sv = "Low" if trusted else "High"
-    s.add("Certificate Chain / Trust Store", chain_label, "PKI BMP, RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
+    s.add("Certificate Chain", chain_label, "PKI BMP, RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
     _flush(s)
+
+    # ------------------------------------------------------------------
+    # Trust Store Validation (Client Simulation of OS/Browser root stores)
+    # This section is display-only: no severity mapping, no score weight,
+    # kept separate from the Certificate section itself.
+    if tr:
+        ws.append([""])
+        r = ws.max_row
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=7)
+        c = ws.cell(r, 1, f"  Trust Store Validation  (Information, Weight: {0}%)")
+        c.font = _font(C["SEC_FG"], b=True); c.fill = _f(C["SEC_BG"]); c.alignment = WRP; c.border = BRD
+        ws.row_dimensions[r].height = 18
+
+        for provider, info in tr.items():
+            if not isinstance(info, dict):
+                continue
+            is_trusted = bool(info.get("is_trusted"))
+            finding = f"Trusted, Version/Release date: {info.get('version')}" if is_trusted else "Untrusted"
+            trust_fill = "FFC6EFCE" if is_trusted else "FFFFEB9C"
+            trust_fg = "FF006100" if is_trusted else "FF9C5700"
+            ws.append([
+                provider,
+                finding,
+                "N.A.",
+                "Trust Store",
+                0.0,
+                0.0,
+                "",
+            ])
+            row = ws.max_row
+            for cell in ws[row]:
+                cell.border = BRD; cell.alignment = WRP; cell.font = _font()
+            ws[row][3].fill = _f(trust_fill)
+            ws[row][3].font = _font(trust_fg, b=True)
+            ws[row][3].alignment = CTR
+            ws[row][4].alignment = RGT; ws[row][5].alignment = RGT
+            ws[row][4].number_format = '0.0'
+            ws[row][5].number_format = '0.00%'
 
     s = Section("Extensions", 3)
     tx = data.get("tls_extensions")
@@ -924,8 +1131,7 @@ def _build_rs(wb, data):
     cs_list = data.get("cipher_suites", [])
     for cs in cs_list:
         if not isinstance(cs, dict): continue
-        nm = cs.get("cipher_name","").upper()
-        sv = "Critical" if any(x in nm for x in ("NULL","ANON","EXPORT","RC4")) else "High" if any(x in nm for x in ("3DES","IDEA")) else "Medium" if "CBC" in nm and not cs.get("aead") else "Low" if cs.get("aead") and cs.get("forward_secrecy") else "Acceptable" if cs.get("aead") else "Medium" if not cs.get("forward_secrecy") else "Acceptable"
+        sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
         cs_sec.add(cs.get("cipher_name",""), "Supported", "RFC 8446 / RFC 5246", sv, "Review in Cipher Suites Tab.", -10, 10)
     
     rw, lo, hi, nm = cs_sec.process()
@@ -941,17 +1147,6 @@ def _build_rs(wb, data):
         cell.border = BRD; cell.alignment = CTR; cell.font = _font()
     ws[ws.max_row][0].alignment = WRP; ws[ws.max_row][6].alignment = WRP
     ws[ws.max_row][5].number_format = '0.0%'
-
-    s = Section("Negotiated Groups (Capability space)", 0)
-    groups = _collect_negotiated_groups(data)
-    if groups:
-        for idx, group in enumerate(groups):
-            param = "Negotiated Groups (Curves, field DH, PQC)" if idx == 0 else ""
-            label, std, sev, rec = _negotiated_group_info(group)
-            s.add(param, label, std, sev, rec, -2, 5)
-    else:
-        s.add("Negotiated Groups (Curves, field DH, PQC)", "None found", "N/A", "N/A", "N.A.", -2, 5)
-    _flush(s)
 
     s = Section("PQC", 16)
     pq = data.get("pqc_active_probe")
@@ -1013,6 +1208,44 @@ def _build_rs(wb, data):
     s.add("PQC Downgrade", dg_finding, "RFC 8446", dg_sv, _rec(dg_sv, "investigate potential MITM protocol downgrade attack."), -2, 10)
     _flush(s)
 
+    # ------------------------------------------------------------------
+    # Client Simulation Results
+    # This section is display-only: no severity mapping, no score weight.
+    client_simulations = data.get("client_simulations")
+    client_simulations = client_simulations if isinstance(client_simulations, dict) else {}
+    if client_simulations:
+        ws.append([""])
+        r = ws.max_row
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=7)
+        c = ws.cell(r, 1, f"  Client Simulation Results  (Weight: {0}%)")
+        c.font = _font(C["SEC_FG"], b=True); c.fill = _f(C["SEC_BG"]); c.alignment = WRP; c.border = BRD
+        ws.row_dimensions[r].height = 18
+
+        for client_name, simulation in client_simulations.items():
+            result_text = str(simulation or "").strip()
+            passed = bool(result_text and result_text.lower() != "no compatible connection found")
+            status = f"Passed: {simulation}" if passed else "Failed"
+            ws.append([
+                client_name,
+                status,
+                "N.A.",
+                "Client Simulation",
+                0.0,
+                0.0,
+                "",
+            ])
+            row = ws.max_row
+            for cell in ws[row]:
+                cell.border = BRD; cell.alignment = WRP; cell.font = _font()
+            fill = "FFC6EFCE" if passed else "FFFFEB9C"
+            fg = "FF006100" if passed else "FF9C5700"
+            ws[row][3].fill = _f(fill)
+            ws[row][3].font = _font(fg, b=True)
+            ws[row][3].alignment = CTR
+            ws[row][4].alignment = RGT; ws[row][5].alignment = RGT
+            ws[row][4].number_format = '0.0;-0.0;0.0'
+            ws[row][5].number_format = '0.00%;-0.00%;0.00%'
+
     ws.append([""]); r = ws.max_row
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=7)
     hc = ws.cell(r, 1, "  Section Summary & Posture Score")
@@ -1057,22 +1290,7 @@ def _build_cs(wb, data):
         auth = str(cs.get("authentication","")) or ""
         pfs = cs.get("forward_secrecy")
         sec_bits = cs.get("security_bits", 0) or 0
-        if any(x in nm for x in ("NULL","ANON","EXPORT","RC4")):
-            sv = "Critical"
-        elif "RSA" in kx and "ECDHE" not in kx and "DHE" not in kx:
-            sv = "High"
-        elif "STATIC" in kx or ("DH" in kx and "ECDHE" not in kx and "DHE" not in kx):
-            sv = "High"
-        elif "DHE" in kx and "ECDHE" not in kx:
-            sv = "Acceptable" if any(d in nm for d in ("DHE_RSA","DHE_DSS","DHE_ANON")) and sec_bits >= 2048 else "High"
-        elif "ECDHE" in kx and "MLKEM" not in kx and "DHE" not in kx:
-            sv = "Low"
-        elif any(x in kx for x in ("MLKEM", "KYBER", "HYBRID")):
-            sv = "Low"
-        else:
-            sv = "Acceptable" if cs.get("aead") else "Medium"
-        if sv == "Acceptable" and "ECDHE" in kx:
-            sv = "Low"
+        sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
         key_label, key_std, key_rec = _cipher_key_exchange_recommendation(kx, sec_bits)
         sig_label, sig_std, sig_rec = _cipher_signature_recommendation(nm, cs.get("mac",""), sec_bits)
         bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption",""), cs.get("mac",""))
@@ -1085,6 +1303,15 @@ def _build_cs(wb, data):
         ws[r][9].fill = _f(sb); ws[r][9].font = _font(sf, b=True); ws[r][9].alignment = CTR
         ws[r][10].alignment = CTR; ws[r][10].font = _font(b=True)
         ws[r][7].alignment = CTR; ws[r][7].font = _font("FF2E7D32" if pfs else "FFC62828", b=True)
+        ws[r][3].alignment = CTR
+
+def _normalize_output_path(output_path: str) -> str:
+    if not output_path:
+        output_path = "TLS_PQC_Posture_Score"
+    if os.path.splitext(output_path)[1].lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        output_path = f"{output_path}.xlsx"
+    return output_path
+
 
 def generate_risk_report(json_path: str, output_path: str) -> bool:
     if not os.path.exists(json_path):
@@ -1097,6 +1324,7 @@ def generate_risk_report(json_path: str, output_path: str) -> bool:
         if "Sheet" in wb.sheetnames: del wb["Sheet"]
         _build_rs(wb, data)
         _build_cs(wb, data)
+        output_path = _normalize_output_path(output_path)
         wb.save(output_path)
         print(f"[+] Successfully generated: {output_path}")
         return True
@@ -1106,5 +1334,5 @@ def generate_risk_report(json_path: str, output_path: str) -> bool:
 
 if __name__ == "__main__":
     j = sys.argv[1] if len(sys.argv) > 1 else "cbom_results.json"
-    o = sys.argv[2] if len(sys.argv) > 2 else "TLS_PQC_Posture_Score.xlsx"
+    o = sys.argv[2] if len(sys.argv) > 2 else "TLS_PQC_Posture_Score"
     generate_risk_report(j, o)

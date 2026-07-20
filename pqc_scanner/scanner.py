@@ -7,6 +7,7 @@ import subprocess
 import re
 import sys
 import shutil
+import ipaddress
 from datetime import datetime, timezone
 
 from sslyze import (
@@ -265,6 +266,29 @@ class TLSScanner:
     # ------------------------------------------------------------------
     # Certificate Extension Extractor
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hostname_matches_identity(host: str, identity: str) -> bool:
+        """Match a hostname against a certificate CN/SAN entry, honoring
+        leftmost wildcards (e.g. '*.google.com' matches 'gemini.google.com')."""
+        if not host or not identity:
+            return False
+        host = host.strip(".").lower()
+        identity = identity.strip(".").lower()
+        if identity.startswith("*."):
+            suffix = identity[1:]  # keep leading dot, e.g. ".google.com"
+            return host.endswith(suffix) and host.count(".") >= suffix.count(".")
+        return host == identity
+
+    def _is_sni_capable_hostname(self) -> bool:
+        """SNI (RFC 6066) is sent by the client whenever it connects using a
+        hostname rather than a raw IP literal, since server_hostname is
+        always passed to wrap_socket in this scanner's handshakes."""
+        try:
+            ipaddress.ip_address(self.host)
+            return False
+        except ValueError:
+            return True
 
     def _extract_extensions(self, cert) -> dict:
         data = {
@@ -1149,11 +1173,16 @@ class TLSScanner:
 
         # TLS extensions heuristic list
         tls_ext = ["renegotiation info/#65281"]
-        if any(
-            self.host in cert.get("SANs", [])
-            or self.host in cert.get("Common Name (CN)", "")
+        sni_matched_cert = any(
+            any(self._hostname_matches_identity(self.host, san) for san in cert.get("SANs", []))
+            or self._hostname_matches_identity(self.host, cert.get("Common Name (CN)", "").split("CN=", 1)[-1])
             for cert in certs_data
-        ):
+        )
+        # SNI is a client-sent extension: since every handshake in this
+        # scanner is done with server_hostname=self.host, SNI was sent
+        # whenever the target is a hostname (not a raw IP literal). A
+        # matching SAN/CN additionally confirms the server honored it.
+        if sni_matched_cert or self._is_sni_capable_hostname():
             tls_ext.append("server name indication/#0")
         if curves:
             tls_ext.append("EC point formats/#11")
