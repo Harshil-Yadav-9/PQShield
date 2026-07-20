@@ -23,25 +23,12 @@ async function runScan(
       signal: AbortSignal.timeout(110_000),
     });
 
-    const bodyText = await res.text();
-    let data: Record<string, unknown> = {};
-    if (bodyText) {
-      try {
-        data = JSON.parse(bodyText) as Record<string, unknown>;
-      } catch {
-        data = { error: bodyText.slice(0, 500) };
-      }
-    }
+    const data = await res.json();
 
     if (!res.ok) {
-      const details =
-        (typeof data.detail === "string" && data.detail) ||
-        (typeof data.error === "string" && data.error) ||
-        bodyText ||
-        "Scan failed.";
-      return { ok: false, error: details };
+      return { ok: false, error: data.detail || data.error || "Scan failed." };
     }
-
+    // pqc_scanner/service.py POST /scan returns { report, raw }.
     return { ok: true, report: data.report as ScanReport, raw: data.raw };
   } catch (err) {
     if (err instanceof Error && err.name === "TimeoutError") {
@@ -73,6 +60,10 @@ export async function POST(req: NextRequest) {
     const session = await auth();
     const userId = session?.user?.id ?? null;
 
+    // Guests get GUEST_SCAN_LIMIT scans, enforced by an httpOnly counter
+    // cookie (can't be reset the way clearing localStorage would reset their
+    // visible scan list). Their scan content never touches the database —
+    // it's returned to the client, which stores it in localStorage.
     if (!userId) {
       const used = await getGuestScanCount();
       if (used >= GUEST_SCAN_LIMIT) {
@@ -92,11 +83,15 @@ export async function POST(req: NextRequest) {
     }
 
     if (userId) {
+      // Signed-in users: unlimited, permanent history in Postgres/Neon. raw
+      // is stored server-side, so no need to send it back down.
       await saveScanReport(result.report, userId, result.raw);
       return NextResponse.json({ id: result.report.id, report: result.report, persisted: true });
     }
 
     await incrementGuestScanCount();
+    // Guests: nothing is stored server-side, so the client needs raw too —
+    // it's what saveGuestScan() puts in localStorage for Export Excel/JSON.
     return NextResponse.json({
       id: result.report.id,
       report: result.report,
@@ -104,6 +99,10 @@ export async function POST(req: NextRequest) {
       persisted: false,
     });
   } catch (err) {
+    // Anything unexpected here — auth()'s DB session lookup, the guest
+    // counter cookie, or the save step — should never surface as Next's
+    // HTML error page (which breaks the client's JSON.parse). Always
+    // respond with JSON.
     console.error("scan route: unhandled error", err);
     return NextResponse.json(
       {

@@ -32,6 +32,16 @@ export async function loadScanRaw(id: string): Promise<unknown | null> {
   return row?.raw ?? null;
 }
 
+// Deletes a scan only if it belongs to the given user — returns true if a
+// row was actually deleted, false if it didn't exist or belonged to someone
+// else (so callers can return 404 rather than leaking whether an id exists).
+export async function deleteScanReport(id: string, userId: string): Promise<boolean> {
+  const result = await prisma.scan.deleteMany({
+    where: { id, userId },
+  });
+  return result.count > 0;
+}
+
 export interface ScanListItem {
   id: string;
   hostname: string;

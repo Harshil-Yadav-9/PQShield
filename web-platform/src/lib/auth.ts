@@ -103,8 +103,12 @@ export const {
             data: { emailVerified: new Date() },
           });
         } catch (err) {
+          // Non-critical bookkeeping write — Google has already verified
+          // this user, so a transient DB hiccup here shouldn't block a
+          // legitimate sign-in. Worst case: emailVerified stays unset for
+          // this Google-only account, which only matters if they later try
+          // the email/password flow.
           console.error("signIn callback: failed to mark emailVerified", err);
-          // don't block login just because this update failed
         }
       }
       return true;

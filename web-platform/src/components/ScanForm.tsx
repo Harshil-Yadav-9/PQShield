@@ -46,7 +46,15 @@ export default function ScanForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { error?: string; code?: string; id?: string; report?: ScanReport; raw?: unknown; persisted?: boolean } = {};
+      if (text) {
+        try {
+          data = JSON.parse(text) as typeof data;
+        } catch {
+          data = { error: text.slice(0, 500) };
+        }
+      }
 
       if (!res.ok) {
         if (data.code === "SCAN_LIMIT_REACHED") setLimitReached(true);

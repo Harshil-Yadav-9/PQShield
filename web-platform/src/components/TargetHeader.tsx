@@ -75,7 +75,15 @@ export default function TargetHeader({
         body: JSON.stringify({ target: hostnameOverride || target.hostname }),
         signal: AbortSignal.timeout(115_000),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { error?: string; id?: string } = {};
+      if (text) {
+        try {
+          data = JSON.parse(text) as typeof data;
+        } catch {
+          data = { error: text.slice(0, 500) };
+        }
+      }
       if (!res.ok) throw new Error(data.error || "Rescan failed.");
       router.push(`/reports/${data.id}?target=${encodeURIComponent(hostnameOverride || target.hostname)}`);
       router.refresh();

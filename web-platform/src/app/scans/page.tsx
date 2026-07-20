@@ -2,6 +2,7 @@ import Link from "next/link";
 import { auth } from "@/lib/auth";
 import { listScansForOwner } from "@/lib/scan-store";
 import GuestScansList from "@/components/GuestScansList";
+import DeleteScanButton from "@/components/DeleteScanButton";
 import { GUEST_SCAN_LIMIT } from "@/lib/guest-scans";
 
 const BAND_COLOR: Record<string, string> = {
@@ -40,24 +41,26 @@ export default async function ScansPage() {
               <p className="py-8 text-[13.5px] text-ink-400">No scans yet — run one from the home page.</p>
             )}
             {scans.map((s) => (
-              <Link
+              <div
                 key={s.id}
-                href={`/reports/${s.id}`}
                 className="flex items-center justify-between py-4 hover:bg-ink-50 -mx-4 px-4 rounded-lg transition-colors"
               >
-                <div>
+                <Link href={`/reports/${s.id}`} className="flex-1 min-w-0">
                   <p className="text-[14px] font-medium text-ink-950">{s.hostname}</p>
                   <p className="text-[12px] text-ink-400 mt-0.5">
                     {new Date(s.createdAt).toLocaleString()}
                   </p>
+                </Link>
+                <div className="flex items-center gap-3">
+                  <Link href={`/reports/${s.id}`} className="text-right">
+                    <p className="text-[14px] font-medium text-ink-950">{s.postureScore}</p>
+                    <p className={`text-[11.5px] mt-0.5 ${BAND_COLOR[s.riskBand] ?? "text-ink-500"}`}>
+                      {s.riskBand}
+                    </p>
+                  </Link>
+                  <DeleteScanButton scanId={s.id} hostname={s.hostname} />
                 </div>
-                <div className="text-right">
-                  <p className="text-[14px] font-medium text-ink-950">{s.postureScore}</p>
-                  <p className={`text-[11.5px] mt-0.5 ${BAND_COLOR[s.riskBand] ?? "text-ink-500"}`}>
-                    {s.riskBand}
-                  </p>
-                </div>
-              </Link>
+              </div>
             ))}
           </>
         ) : (
