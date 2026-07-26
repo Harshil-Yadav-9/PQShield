@@ -80,3 +80,12 @@ export function saveGuestScan(report: ScanReport, raw: unknown): void {
 export function clearGuestScans(): void {
   writeAll([]);
 }
+
+// Removes a single scan by id from localStorage. Used only after a
+// signed-in user's DB delete succeeds (defensive cleanup in case a
+// migrated scan is still lingering locally) — guests themselves don't get
+// a delete button, so this isn't reachable from the guest flow.
+export function deleteGuestScan(id: string): void {
+  const entries = readAll().filter((e) => e.id !== id);
+  writeAll(entries);
+}
