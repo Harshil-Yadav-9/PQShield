@@ -7,7 +7,7 @@ Local dev:
     uvicorn pqc_scanner.service:app --reload --port 8000
 
 Endpoint:
-    POST /scan  { "target": "example.com" }
+    POST /scans  { "target": "example.com" }
     -> 200 { ...ScanReport shaped JSON... }
     -> 4xx/5xx { "error": "..." }
 """
@@ -47,7 +47,7 @@ class ScanRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     # The raw CBOM scan JSON (same shape as cbom_results.json / ScanResults.model_dump()),
-    # exactly as returned in the `raw` field of POST /scan. This is round-tripped from the
+    # exactly as returned in the `raw` field of POST /scans. This is round-tripped from the
     # frontend rather than re-scanned, so exporting never re-hits the target.
     raw: dict[str, Any]
     filename: str | None = None
@@ -76,7 +76,7 @@ async def health():
     return {"ok": True}
 
 
-@app.post("/scan")
+@app.post("/scans")
 async def scan(req: ScanRequest):
     target = req.target.strip()
     if not target:
@@ -104,7 +104,7 @@ async def scan(req: ScanRequest):
 async def export_excel(req: ExportRequest):
     """
     Rebuilds the Excel risk report (same generator the CLI uses) from raw
-    CBOM JSON already produced by a prior /scan call. Never touches the
+    CBOM JSON already produced by a prior /scans call. Never touches the
     network — pure data-in, file-out.
     """
     with tempfile.TemporaryDirectory() as tmp:
