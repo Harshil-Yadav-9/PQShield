@@ -42,6 +42,25 @@ export async function deleteScanReport(id: string, userId: string): Promise<bool
   return result.count > 0;
 }
 
+// Used when a guest signs in: pushes a scan that was only in their
+// browser's localStorage into the database. Uses upsert (not create) so
+// this is safe to call more than once with the same report id — e.g. if
+// the migration runs twice (two tabs, a retry) it just no-ops on the
+// second call instead of throwing a unique-constraint error.
+export async function migrateGuestScan(report: ScanReport, userId: string, raw?: unknown): Promise<void> {
+  await prisma.scan.upsert({
+    where: { id: report.id },
+    update: {}, // already migrated (or id collision) — leave the existing row alone
+    create: {
+      id: report.id,
+      hostname: report.target.hostname,
+      report: report as unknown as object,
+      raw: (raw ?? undefined) as object | undefined,
+      userId,
+    },
+  });
+}
+
 export interface ScanListItem {
   id: string;
   hostname: string;

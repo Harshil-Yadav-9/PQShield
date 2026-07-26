@@ -34,7 +34,7 @@ async function buildResponse(
     const res = await fetch(`${SCANNER_URL}/export/excel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ raw, filename: `TLS_PQC_Risk_Report_${filenameBase}.xlsx` }),
+      body: JSON.stringify({ raw, filename: `Audit_Report_${filenameBase}.xlsx` }),
       signal: AbortSignal.timeout(50_000),
     });
 
@@ -51,7 +51,7 @@ async function buildResponse(
       status: 200,
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="TLS_PQC_Risk_Report_${filenameBase}.xlsx"`,
+        "Content-Disposition": `attachment; filename="Audit_Report_${filenameBase}.xlsx"`,
       },
     });
   } catch (err) {
