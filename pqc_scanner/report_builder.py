@@ -6,6 +6,16 @@ expects (web-platform/src/lib/types.ts -> ScanReport).
 This intentionally reuses every scoring / severity helper already defined in
 risk_engine.py so the web report and the Excel report always agree on numbers.
 It does not touch openpyxl at all — pure data in, dict out.
+
+IMPORTANT: every section below is built row-for-row identical to risk_engine.py's
+_build_rs() (the function that actually generates the "Posture Score" sheet in
+the Excel report). If you change scoring logic here, change it there too (or
+better: change the shared helper in risk_engine.py so both stay in sync
+automatically). The one deliberate structural difference is Cipher Suites: the
+Excel shows one summary row (details live on a separate sheet) while the
+website lists every negotiated cipher individually — but both feed the exact
+same per-cipher severities into the section, so the resulting section score is
+identical either way.
 """
 import re
 import uuid
@@ -30,8 +40,8 @@ from .risk_engine import (
     _signature_recommendation,
     _normalize_cert_key_size,
     _j,
-    _collect_negotiated_groups,
-    _negotiated_group_info,
+    resolve_cipher_suite_severity,
+    CIPHER_SUITE_SCORING_MODE,
 )
 
 SECTION_ID_BY_NAME = {
@@ -197,6 +207,11 @@ def build_scan_report(data: dict) -> dict:
         ocsp_sv = "Acceptable" if ocsp_urls else "High"
         s.add(f"Certificate {idx} - OCSP Staple", ocsp_finding, "NIST SP 800-52r2", ocsp_sv, _rec(ocsp_sv, "have OCSP Stapling validated from trusted authorities."), -6, 5)
 
+        ca_issuers = cert.get("CA Issuers") if isinstance(cert.get("CA Issuers"), list) else []
+        ca_finding = _j(ca_issuers) if ca_issuers else "Not Present"
+        ca_sv = "Acceptable" if ca_issuers else "Medium"
+        s.add(f"Certificate {idx} - CA Issuers", ca_finding, "RFC 5280 (Authority Information Access)", ca_sv, _rec(ca_sv, "publish the issuing CA certificate via the CA Issuers AIA extension so clients can build the chain."), -2, 5)
+
         ct = cert.get("Certificate Transparency", "")
         ct_lower = str(ct).lower()
         if "3" in ct_lower or "sct present" in ct_lower:
@@ -215,7 +230,7 @@ def build_scan_report(data: dict) -> dict:
     trusted = any(v.get("is_trusted") for v in tr.values() if isinstance(v, dict))
     chain_label = "Trusted chain" if trusted else ("Self-Signed" if len(certs) == 1 else "Chain integrity lost")
     chain_sv = "Low" if trusted else "High"
-    s.add("Certificate Chain / Trust Store", chain_label, "PKI BMP, RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
+    s.add("Certificate Chain", chain_label, "PKI BMP, RFC 5280", chain_sv, _rec(chain_sv, "fix incomplete certificate chain or untrusted root CA."), -6, 10)
     sections.append(_finalize_section(s))
 
     # ---------------- Extensions ----------------
@@ -308,26 +323,16 @@ def build_scan_report(data: dict) -> dict:
     sections.append(_finalize_section(s))
 
     # ---------------- Cipher Suites ----------------
+    # Same severity resolver + same -10/10 bounds per cipher as _build_rs's
+    # cs_sec — so the section's raw/lo/hi/normalized score is identical to the
+    # Excel even though the website lists every cipher individually instead of
+    # one "see the other sheet" summary row.
     s = Section("Cipher Suites", 23)
     for cs in data.get("cipher_suites", []):
         if not isinstance(cs, dict):
             continue
-        nm = cs.get("cipher_name", "").upper()
-        if any(x in nm for x in ("NULL", "ANON", "EXPORT", "RC4")):
-            sv = "Critical"
-        elif any(x in nm for x in ("3DES", "IDEA")):
-            sv = "High"
-        elif "CBC" in nm and not cs.get("aead"):
-            sv = "Medium"
-        elif cs.get("aead") and cs.get("forward_secrecy"):
-            sv = "Low"
-        elif cs.get("aead"):
-            sv = "Acceptable"
-        elif not cs.get("forward_secrecy"):
-            sv = "Medium"
-        else:
-            sv = "Acceptable"
-        s.add(cs.get("cipher_name", ""), "Supported", "RFC 8446 / RFC 5246", sv, "Review the negotiated cipher suite list for legacy fallback removal.", -10, 10)
+        sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
+        s.add(cs.get("cipher_name", ""), "Supported", "RFC 8446 / RFC 5246", sv, _rec(sv, "review this cipher suite for deprecation / legacy fallback removal."), -10, 10)
     sections.append(_finalize_section(s))
 
     # ---------------- PQC ----------------
@@ -379,15 +384,10 @@ def build_scan_report(data: dict) -> dict:
         dg_sv = "Low"
         dg_finding = "Well Supported"
     s.add("PQC Downgrade", dg_finding, "RFC 8446", dg_sv, _rec(dg_sv, "investigate potential MITM protocol downgrade attack."), -2, 10)
-
-    # Negotiated groups folded in as informational PQC findings (0-weight rows,
-    # they still show up in the table but don't skew the section's score much
-    # since their lo/hi range is small relative to the rest of the section).
-    groups = _collect_negotiated_groups(data)
-    if groups:
-        for group in groups:
-            label, std, sev, rec = _negotiated_group_info(group)
-            s.add(f"Negotiated Group - {label}", label, std, sev, rec, -2, 5)
+    # NOTE: risk_engine.py's _build_rs stops here — exactly 4 rows in the PQC
+    # section. Do not add extra rows (e.g. negotiated-group breakdowns) here;
+    # doing so changes this section's lo/hi span and shifts its normalized
+    # score away from what the Excel shows for the same scan.
     sections.append(_finalize_section(s))
 
     posture_score = round(sum(sec["normalized"] * (sec["weight"] / 100) for sec in sections), 1)

@@ -14,6 +14,7 @@ from sslyze import (
     Scanner, ServerScanRequest, ServerNetworkLocation,
     ScanCommand, ScanCommandAttemptStatusEnum
 )
+from sslyze.server_setting import ServerNetworkConfiguration
 from nassl.ephemeral_key_info import DhEphemeralKeyInfo, EcDhEphemeralKeyInfo
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -856,6 +857,17 @@ class TLSScanner:
         pqc_probe_results = self._probe_pqc_openssl_cli()
 
         server_location = ServerNetworkLocation(hostname=self.host, port=self.port)
+        # sslyze defaults to network_timeout=5, network_max_retries=3 — for a
+        # site that's slow or actively resists automated scanning (WAFs,
+        # ssllabs.com, badssl.com), that's up to 15s of retries PER scan
+        # command, and there are ~14 commands below, which can blow well past
+        # our outer 110s request timeout. Tighten this so unresponsive probes
+        # fail fast instead of hanging the whole scan.
+        network_config = ServerNetworkConfiguration(
+            tls_server_name_indication=self.host,
+            network_timeout=3,
+            network_max_retries=1,
+        )
         scanner = Scanner()
 
         commands = [
@@ -876,7 +888,7 @@ class TLSScanner:
         ]
 
         scan_req = ServerScanRequest(
-            server_location=server_location, scan_commands=commands
+            server_location=server_location, network_configuration=network_config, scan_commands=commands
         )
         scanner.queue_scans([scan_req])
 

@@ -405,7 +405,7 @@ def _signature_recommendation(sig_label):
         return "Strongly Advised to ECDSA + SHA256/384 or to ML DSA or SLH DSA for PQC environment"
     return "Strongly Advised to ECDSA + SHA256/384 or to ML DSA or SLH DSA for PQC environment"
 
-def _norm(r, l, h): return 50.0 if h == l else round(max(0.0, min(100.0, (r - l) / (h - l) * 100)), 1)
+def _norm(r, l, h): return 0.0 if h == l else round(max(0.0, min(100.0, (r - l) / (h - l) * 100)), 1)
 
 def _rec(sev, act):
     if sev in ("Low", "Acceptable"): return "N.A."
