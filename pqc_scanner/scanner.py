@@ -890,16 +890,37 @@ class TLSScanner:
         scan_req = ServerScanRequest(
             server_location=server_location, network_configuration=network_config, scan_commands=commands
         )
-        scanner.queue_scans([scan_req])
 
-        result = None
-        for r in scanner.get_results():
-            result = r
+        # scanner.queue_scans()/get_results() are synchronous, blocking sslyze
+        # calls with no internal await points. Calling them directly here
+        # would block the whole event loop for as long as sslyze takes —
+        # and critically, it means service.py's `asyncio.wait_for(...,
+        # timeout=SCAN_TIMEOUT_SECONDS)` can NEVER actually cancel a slow
+        # scan, because cancellation only takes effect at an await point,
+        # and there isn't one inside a blocking synchronous call. Sites that
+        # deliberately serve weak/legacy crypto (dh1024.badssl.com and
+        # friends) can make sslyze's handshake attempts take far longer than
+        # network_timeout/network_max_retries alone would suggest, and
+        # without this fix the request just hangs indefinitely past every
+        # configured timeout instead of failing fast with a clear error.
+        # Running the blocking call in a worker thread lets wait_for's
+        # timeout fire and return promptly, even if the background thread
+        # takes a little longer to actually wind down.
+        result = await asyncio.to_thread(self._run_sslyze_blocking, scanner, scan_req)
 
         if not result:
             raise RuntimeError("SSLyze returned empty results.")
 
         return self._parse_results(result, start_iso, pqc_probe_results)
+
+    @staticmethod
+    def _run_sslyze_blocking(scanner: Scanner, scan_req: ServerScanRequest):
+        """The actual blocking sslyze call, isolated so it can run via asyncio.to_thread()."""
+        scanner.queue_scans([scan_req])
+        result = None
+        for r in scanner.get_results():
+            result = r
+        return result
 
     # ------------------------------------------------------------------
     # Result Parser
