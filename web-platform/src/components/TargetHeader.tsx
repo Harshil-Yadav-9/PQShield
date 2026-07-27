@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ScanReport, ScanTarget } from "@/lib/types";
 import { formatDate, formatDuration } from "@/lib/utils";
-import { getGuestScanRaw } from "@/lib/guest-scans";
+import { getGuestScanRaw, saveGuestScan } from "@/lib/guest-scans";
 
 async function downloadExport(reportId: string, format: "json" | "excel", isGuest: boolean, hostname: string) {
   const res = isGuest
@@ -76,7 +76,7 @@ export default function TargetHeader({
         signal: AbortSignal.timeout(115_000),
       });
       const text = await res.text();
-      let data: { error?: string; id?: string } = {};
+      let data: { error?: string; id?: string; report?: ScanReport; raw?: unknown; persisted?: boolean } = {};
       if (text) {
         try {
           data = JSON.parse(text) as typeof data;
@@ -85,6 +85,11 @@ export default function TargetHeader({
         }
       }
       if (!res.ok) throw new Error(data.error || "Rescan failed.");
+      if (data.persisted) {
+        window.dispatchEvent(new Event("pqshield_user_scans_changed"));
+      } else if (data.report) {
+        saveGuestScan(data.report, data.raw);
+      }
       router.push(`/reports/${data.id}?target=${encodeURIComponent(hostnameOverride || target.hostname)}`);
       router.refresh();
     } catch (err) {

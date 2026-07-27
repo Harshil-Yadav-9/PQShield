@@ -63,7 +63,12 @@ export default function ScanForm() {
 
       clearInterval(stepTimer);
       setStepIndex(STEPS.length);
-      if (!data.persisted) {
+      if (data.persisted) {
+        // Saved server-side under this account — let the sidebar's "Your
+        // scans" list know to refetch instead of staying stale until the
+        // person happens to navigate to /scans.
+        window.dispatchEvent(new Event("pqshield_user_scans_changed"));
+      } else {
         // Guest scan — the server never stored it, so the browser is the
         // only place it exists. Save it before navigating so the report
         // page and sidebar can find it.

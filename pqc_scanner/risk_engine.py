@@ -618,13 +618,21 @@ def _pk_a(s, k):
 
 def _exp(e, d):
     if e == "EXPIRED": return "Critical", -10
+    if not d:
+        # No expiry date to check at all — we can't confirm this cert is
+        # actually valid, so this must not be silently rewarded as if it
+        # were a confirmed-good result.
+        return "High", -6
     try:
         dy = (datetime.fromisoformat(d.replace("Z","+00:00")) - datetime.now(timezone.utc)).days
         if dy < 0: return "Critical", -10
         if dy <= 30: return "Medium", -2
         if dy < 180: return "Acceptable", 5
         return "Low", 10
-    except: return "Acceptable", 5
+    except:
+        # Date present but couldn't be parsed — same reasoning as above:
+        # unknown/unverifiable must not score the same as verified-valid.
+        return "High", -6
 
 def _hsts(h):
     if not h or h == "not offered": return "High"
@@ -924,7 +932,7 @@ def _build_rs(wb, data):
     fb = vu.get("Fallback_SCSV")
     fb = fb if isinstance(fb, dict) else {}
     
-    fb_sv = "Acceptable" if fb.get("is_supported") else ("High" if fb.get("legacy_protocol_present") else "Acceptable")
+    fb_sv = "Acceptable" if fb.get("is_supported") else ("High" if fb.get("legacy_protocol_present") else "Medium")
     s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -2, 5)
     _flush(s)
 
@@ -958,7 +966,14 @@ def _build_rs(wb, data):
 
         es, n_a = cert.get("Expiration Status", ""), cert.get("Valid Not After", "")
         x_sev, _ = _exp(es, n_a)
-        valid_label = "Valid" if isinstance(es, str) and "VALID" in es.upper() else "Invalid"
+        if isinstance(es, str) and "VALID" in es.upper():
+            valid_label = "Valid"
+        elif es == "EXPIRED" or (isinstance(n_a, str) and n_a and x_sev == "Critical"):
+            valid_label = "Expired"
+        elif not n_a:
+            valid_label = "Unknown"
+        else:
+            valid_label = "Invalid"
         date_display = ""
         if n_a:
             try:
