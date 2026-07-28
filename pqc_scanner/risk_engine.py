@@ -888,7 +888,7 @@ def _build_rs(wb, data):
     ws.row_dimensions[ws.max_row].height = 20; ws.freeze_panes = "A4"
 
     res = []
-    def _flush(s):
+    def _flush(s, force_nm=None):
         ws.append([""]); r = ws.max_row
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=7)
         c = ws.cell(r, 1, f"  {s.name}  (Weight: {s.weight}%)")
@@ -896,6 +896,8 @@ def _build_rs(wb, data):
         ws.row_dimensions[r].height = 18
         
         rw, lo, hi, nm = s.process()
+        if force_nm is not None:
+            nm = force_nm
         for v in s.rows:
             ws.append([v["param"], v["finding"], v["std"], v["sev"], v["score"], v["wt"]/100, v["rec"]])
             mr = ws.max_row
@@ -906,8 +908,8 @@ def _build_rs(wb, data):
             ws[mr][4].alignment = RGT; ws[mr][4].font = _font();
             ws[mr][4].number_format = '0.0;-0.0;0.0'
             contribution = round(v["score"] * v["wt"] / 10.0, 2)
-            ws[mr][5].value = abs(contribution) / 100.0
-            ws[mr][5].number_format = '+0.00%;+0.00%;+0.00%'
+            ws[mr][5].value = contribution / 100.0
+            ws[mr][5].number_format = '+0.00%;-0.00%;0.00%'
             ws[mr][5].alignment = RGT
             ws[mr][5].font = _font()
         res.append((s.name, rw, lo, hi, nm, s.weight))
@@ -934,7 +936,14 @@ def _build_rs(wb, data):
     
     fb_sv = "Acceptable" if fb.get("is_supported") else ("High" if fb.get("legacy_protocol_present") else "Medium")
     s.add("Downgrade Protection (TLS_FALLBACK_SCSV)", "Supported" if fb.get("is_supported") else "Not Supported", "RFC 7507", fb_sv, _rec(fb_sv, "enable TLS_FALLBACK_SCSV to prevent protocol downgrade attacks."), -2, 5)
-    _flush(s)
+
+    protocol_list = data.get("protocols", []) or []
+    protocol_rows = [p for p in protocol_list if isinstance(p, dict)]
+    # A site with EVERY protocol disabled (SSLv2 through TLS 1.3) can't do
+    # SSL/TLS at all — total failure, force the section to 0. If at least
+    # one protocol works (even an old insecure one), score normally.
+    protocol_force_zero = 0.0 if protocol_rows and all(not p.get("supported") for p in protocol_rows) else None
+    _flush(s, force_nm=protocol_force_zero)
 
     s = Section("Certificate", 13)
     certs = [c for c in data.get("certificates", []) if isinstance(c, dict)]
@@ -1140,7 +1149,12 @@ def _build_rs(wb, data):
         good_sv = "Low" if bnd[1] == 10 else "Acceptable"
         sv = good_sv if cn=="Strong Encryption (AEAD)" and pr else "High" if cn=="Strong Encryption (AEAD)" else bs if pr else good_sv
         s.add(cn, "Present" if pr else "Absent", std, sv, _rec(sv, act), *bnd)
-    _flush(s)
+    # If no cipher suites were negotiated at all, every category above
+    # defaults to "Absent" — that's not a real finding, it's the absence of
+    # test data, so don't let it score as if all the bad ciphers were
+    # confirmed absent (which would otherwise look artificially good).
+    cipher_untested = not data.get("cipher_suites")
+    _flush(s, force_nm=0.0 if cipher_untested else None)
 
     cs_sec = Section("Cipher Suites", 23)
     cs_list = data.get("cipher_suites", [])

@@ -157,7 +157,15 @@ def build_scan_report(data: dict) -> dict:
         -2,
         5,
     )
-    sections.append(_finalize_section(s))
+    protocol_list = data.get("protocols", []) or []
+    protocol_rows = [p for p in protocol_list if isinstance(p, dict)]
+    protocol_section = _finalize_section(s)
+    if protocol_rows and all(not p.get("supported") for p in protocol_rows):
+        # A site with EVERY protocol disabled (SSLv2 through TLS 1.3) can't
+        # do SSL/TLS at all — total failure, force the section to 0.
+        protocol_section["normalized"] = 0.0
+        protocol_section["summary"] = "No SSL/TLS protocol is supported at all — this server could not be evaluated over TLS."
+    sections.append(protocol_section)
 
     # ---------------- Certificate ----------------
     s = Section("Certificate", 13)
@@ -320,7 +328,17 @@ def build_scan_report(data: dict) -> dict:
         good_sv = "Low" if bnd[1] == 10 else "Acceptable"
         sv = good_sv if cn == "Strong Encryption (AEAD)" and pr else "High" if cn == "Strong Encryption (AEAD)" else (bs if pr else good_sv)
         s.add(cn, "Present" if pr else "Absent", std, sv, _rec(sv, act), *bnd)
-    sections.append(_finalize_section(s))
+    cipher_categories_section = _finalize_section(s)
+    if not data.get("cipher_suites"):
+        # No cipher suites were negotiated at all — every category above
+        # defaulted to "Absent", which isn't a real finding, it's the
+        # absence of test data. Don't let that score as if all the bad
+        # ciphers were confirmed absent (that would look artificially good).
+        cipher_categories_section["normalized"] = 0.0
+        cipher_categories_section["summary"] = (
+            "No cipher suites were negotiated with this server, so cipher categories could not be evaluated."
+        )
+    sections.append(cipher_categories_section)
 
     # ---------------- Cipher Suites ----------------
     # Same severity resolver + same -10/10 bounds per cipher as _build_rs's
@@ -333,7 +351,14 @@ def build_scan_report(data: dict) -> dict:
             continue
         sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
         s.add(cs.get("cipher_name", ""), "Supported", "RFC 8446 / RFC 5246", sv, _rec(sv, "review this cipher suite for deprecation / legacy fallback removal."), -10, 10)
-    sections.append(_finalize_section(s))
+    cipher_suites_section = _finalize_section(s)
+    if not data.get("cipher_suites"):
+        # Zero rows here already normalizes to 0 (see _norm in risk_engine.py),
+        # but the default "No high-severity issues found across 0 checks."
+        # summary is misleading — nothing was tested, that's not a clean bill
+        # of health.
+        cipher_suites_section["summary"] = "No cipher suites were negotiated with this server — the TLS connection likely failed entirely."
+    sections.append(cipher_suites_section)
 
     # ---------------- PQC ----------------
     s = Section("PQC", 16)
