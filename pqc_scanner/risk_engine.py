@@ -76,7 +76,11 @@ def _group_severity_from_name(group_name):
         return "Low"
     if group.startswith("ffdhe"):
         return "Critical"
-    if group in {"secp160r1", "secp192r1", "secp224r1"}:
+    if group == "secp224r1":
+        return "Medium"
+    if group == "secp192r1":
+        return "High"
+    if group == "secp160r1":
         return "Critical"
     if group == "binary_curves":
         return "High"
@@ -84,6 +88,106 @@ def _group_severity_from_name(group_name):
         return "Medium"
     if group == "arbitrary_explicit_curves":
         return "High"
+    return None
+
+
+def _ecdhe_curve_severity(curve_name):
+    if not curve_name:
+        return None
+    text = str(curve_name).upper()
+    if re.search(r"\bSECP256R1\b|\bPRIME256V1\b|\bP-256\b", text):
+        return None
+    if re.search(r"\bSECP384R1\b|\bP-384\b", text):
+        return None
+    if re.search(r"\bSECP521R1\b|\bP-521\b", text):
+        return None
+    if re.search(r"\bSECP224R1\b|\bP-224\b", text):
+        return "Medium"
+    if re.search(r"\bSECP192R1\b|\bP-192\b", text):
+        return "High"
+    if re.search(r"\bSECP160R1\b|\bP-160\b", text):
+        return "Critical"
+    return None
+
+
+def _extract_dh_bits(suite_data=None, cipher_name=None, key_exchange=None):
+    suite_data = suite_data or {}
+    dh_bits = suite_data.get("dh_prime_bits") or suite_data.get("dh_bits")
+    if dh_bits not in (None, "", 0, "0"):
+        try:
+            return int(dh_bits)
+        except Exception:
+            pass
+    for text in (str(key_exchange or ""), str(cipher_name or "")):
+        if not text:
+            continue
+        m = re.search(r"(\d+)\s*[- ]?bit", text, re.I)
+        if m:
+            return int(m.group(1))
+        if re.search(r"\bECDHE\b", text, re.I):
+            continue
+        m = re.search(r"\bDHE.*?(\d+)", text, re.I)
+        if m:
+            return int(m.group(1))
+    return 0
+
+
+def _find_ecdhe_curve(suite_data=None, key_exchange=None, cipher_name=None):
+    suite_data = suite_data or {}
+    curve_keys = ("ecdh_curve", "negotiated_curve", "curve", "supported_curve", "supported_groups")
+    for key in curve_keys:
+        value = suite_data.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if item:
+                    tok = str(item)
+                    if re.search(r"\b(SECP256R1|SECP384R1|SECP521R1|SECP224R1|SECP192R1|SECP160R1|P-256|P-384|P-521|P-224|P-192|P-160)\b", tok, re.I):
+                        return tok
+        elif value:
+            tok = str(value)
+            if re.search(r"\b(SECP256R1|SECP384R1|SECP521R1|SECP224R1|SECP192R1|SECP160R1|P-256|P-384|P-521|P-224|P-192|P-160)\b", tok, re.I):
+                return tok
+    for text in (str(key_exchange or ""), str(cipher_name or "")):
+        m = re.search(r"\b(SECP256R1|SECP384R1|SECP521R1|SECP224R1|SECP192R1|SECP160R1|P-256|P-384|P-521|P-224|P-192|P-160)\b", text, re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _cipher_suite_severity_override(cipher_name, suite_data=None):
+    suite_data = suite_data or {}
+    key_exchange = str(suite_data.get("key_exchange", "") or "").upper()
+    cipher_name_upper = str(cipher_name or "").upper()
+    dh_bits = _extract_dh_bits(suite_data, cipher_name_upper, key_exchange)
+    if (re.search(r"\bDHE\b", key_exchange) and not re.search(r"\bECDHE\b", key_exchange)) or (
+        re.search(r"\bDHE\b", cipher_name_upper) and not re.search(r"\bECDHE\b", cipher_name_upper)
+    ):
+        if dh_bits:
+            if dh_bits < 1024:
+                return "Critical"
+            if dh_bits < 2048:
+                return "High"
+        return None
+
+    if re.search(r"\bECDHE\b", key_exchange) and "MLKEM" not in key_exchange:
+        curve = _find_ecdhe_curve(suite_data, key_exchange, cipher_name_upper)
+        if curve:
+            sev = _ecdhe_curve_severity(curve)
+            if sev and sev != "Low":
+                sia_sev = SIA_CIPHER_SEVERITY_MAP.get(_normalize_cipher_suite_name(cipher_name_upper))
+                if sia_sev in (None, "Low", "Acceptable"):
+                    return sev
+
+    rsa_key_size = suite_data.get("rsa_key_size") or suite_data.get("rsa_bits") or 0
+    try:
+        rsa_key_size = int(rsa_key_size)
+    except Exception:
+        rsa_key_size = 0
+    if rsa_key_size:
+        if rsa_key_size < 1024:
+            return "Critical"
+        if rsa_key_size < 2048:
+            return "High"
     return None
 
 
@@ -99,13 +203,33 @@ def _legacy_cipher_suite_severity(cipher_name, suite_data=None):
     if any(x in nm for x in ("NULL", "ANON", "EXPORT", "RC4")):
         return "Critical"
     if "RSA" in kx and "ECDHE" not in kx and "DHE" not in kx:
+        rsa_bits = suite_data.get("rsa_key_size") or suite_data.get("rsa_bits") or 0
+        rsa_bits = int(rsa_bits) if rsa_bits else 0
+        if rsa_bits and rsa_bits < 1024:
+            return "Critical"
+        if rsa_bits and rsa_bits < 2048:
+            return "High"
         return "High"
     if "STATIC" in kx or ("DH" in kx and "ECDHE" not in kx and "DHE" not in kx):
         return "High"
     if "DHE" in kx and "ECDHE" not in kx:
+        if dh_bits and dh_bits < 2048:
+            return "High"
         return "Acceptable" if any(d in nm for d in ("DHE_RSA", "DHE_DSS", "DHE_ANON")) and dh_bits >= 2048 else "High"
     if "ECDHE" in kx and "MLKEM" not in kx and "DHE" not in kx:
-        return "Low"
+        # Use explicit curve severity overrides for ECDHE.
+        for key in ("ecdh_curve", "negotiated_curve", "curve", "supported_curve", "supported_groups"):
+            value = suite_data.get(key)
+            if isinstance(value, list):
+                for curve in value:
+                    sev = _ecdhe_curve_severity(curve)
+                    if sev:
+                        return sev
+            elif value:
+                sev = _ecdhe_curve_severity(value)
+                if sev:
+                    return sev
+        return None
     if any(x in kx for x in ("MLKEM", "KYBER", "HYBRID")):
         return "Low"
     if suite_data.get("aead"):
@@ -122,6 +246,10 @@ def resolve_cipher_suite_severity(cipher_name, suite_data=None, mode=None):
         return _legacy_cipher_suite_severity(cipher_name, suite_data)
 
     raw_name = str(cipher_name or "")
+    override = _cipher_suite_severity_override(raw_name, suite_data)
+    if override:
+        return override
+
     if raw_name:
         sia_sev = SIA_CIPHER_SEVERITY_MAP.get(_normalize_cipher_suite_name(raw_name))
         if sia_sev:
@@ -130,14 +258,28 @@ def resolve_cipher_suite_severity(cipher_name, suite_data=None, mode=None):
     key_exchange = str(suite_data.get("key_exchange", "") or "").upper()
     cipher_name_upper = raw_name.upper()
     if "DHE" in key_exchange or "DHE" in cipher_name_upper:
-        dh_bits = suite_data.get("dh_prime_bits") or suite_data.get("dh_bits") or 0
+        dh_bits = _extract_dh_bits(suite_data, raw_name, key_exchange)
         if dh_bits:
-            dh_bits = int(dh_bits)
-            if dh_bits < 2048:
+            if dh_bits < 1024:
                 return "Critical"
+            if dh_bits < 2048:
+                return "High"
             if dh_bits < 3072:
                 return "Acceptable"
             return "Low"
+
+    if "ECDHE" in key_exchange and "MLKEM" not in key_exchange and "DHE" not in key_exchange:
+        curve_sources = []
+        for key in ("ecdh_curve", "negotiated_curve", "curve", "supported_curve", "supported_groups"):
+            value = suite_data.get(key)
+            if isinstance(value, list):
+                curve_sources.extend(value)
+            elif value:
+                curve_sources.append(value)
+        for curve in curve_sources:
+            sev = _ecdhe_curve_severity(curve)
+            if sev:
+                return sev
 
     curve_sources = []
     for key in ("ecdh_curve", "negotiated_curve", "curve", "supported_curve", "supported_groups"):
@@ -155,8 +297,10 @@ def resolve_cipher_suite_severity(cipher_name, suite_data=None, mode=None):
     dh_bits = suite_data.get("dh_prime_bits") or suite_data.get("dh_bits") or 0
     if dh_bits:
         dh_bits = int(dh_bits)
-        if dh_bits < 2048:
+        if dh_bits < 1024:
             return "Critical"
+        if dh_bits < 2048:
+            return "High"
         if dh_bits < 3072:
             return "Acceptable"
         return "Low"
@@ -164,6 +308,8 @@ def resolve_cipher_suite_severity(cipher_name, suite_data=None, mode=None):
     rsa_key_size = suite_data.get("rsa_key_size") or suite_data.get("rsa_bits") or 0
     if rsa_key_size:
         rsa_key_size = int(rsa_key_size)
+        if rsa_key_size < 1024:
+            return "Critical"
         if rsa_key_size < 2048:
             return "High"
         return "Acceptable"
@@ -683,7 +829,7 @@ def _cipher_signature_recommendation(cipher_name, mac, bits=0):
         return f"SHA-{bits}", "NIST SP 800-131A Rev. 2", "Strongly Advised to SHA-256(or SHA-3) or above"
     return "SHA-256", "NIST SP 800-131A Rev. 2", "N.A."
 
-def _cipher_bulk_recommendation(bulk, mac):
+def _cipher_bulk_recommendation(bulk, mac, cipher_name=None):
     b = str(bulk or "").upper()
     if "CHACHA20" in b:
         return "ChaCha20-Poly1305", "NIST FIPS 197", "N.A."
@@ -701,6 +847,28 @@ def _cipher_bulk_recommendation(bulk, mac):
         return "NULL", "RFC 5246", "Strongly Advised to have ChaCha20 or AES 128 atleast"
     if "CBC" in b:
         return "AES CBC + HMAC", "NIST SP 800-131A rev 2/RFC 5246", "Strongly Advised to have ChaCha20 or AES 128 atleast"
+    # If we couldn't map the bulk encryption, try to extract it from
+    # the raw cipher suite name (e.g. TLS_XYZ_WITH_CAMELLIA_128_GCM_SHA256)
+    if not b or b == "UNKNOWN":
+        cn = str(cipher_name or "")
+        if cn:
+            cn_up = cn.upper()
+            m = re.search(r"WITH[_-]?(.*)$", cn_up)
+            if m:
+                rest = m.group(1)
+                # split on underscores or hyphens and stop at digits or common MAC tokens
+                parts = re.split(r"[_-]", rest)
+                out_parts = []
+                for t in parts:
+                    if re.match(r'^(SHA|MD5)', t):
+                        break
+                    if re.match(r'^\d+$', t):
+                        break
+                    out_parts.append(t)
+                if out_parts:
+                    extracted = "_".join(out_parts)
+                    return extracted, "RFC 8439", "Informational: displayed from cipher suite"
+        return b or "Unknown", "RFC 8439", "Recommended(OPT) to have ChaCha20 or AES 256"
     return b or "Unknown", "RFC 8439", "Recommended(OPT) to have ChaCha20 or AES 256"
 
 def _normalized_negotiated_group_name(group):
@@ -1322,10 +1490,10 @@ def _build_cs(wb, data):
         sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
         key_label, key_std, key_rec = _cipher_key_exchange_recommendation(kx, sec_bits)
         sig_label, sig_std, sig_rec = _cipher_signature_recommendation(nm, cs.get("mac",""), sec_bits)
-        bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption",""), cs.get("mac",""))
+        bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption",""), cs.get("mac",""), cs.get("cipher_name",""))
         recommendation = f"{key_label} ({key_std}): {key_rec}, {sig_label} ({sig_std}): {sig_rec}, {bulk_label} ({bulk_std}): {bulk_rec}"
         pfs_label = "Yes (Ephemeral)" if pfs else "Not Supported"
-        ws.append([i, cs.get("cipher_name",""), cs.get("protocol",""), cs.get("key_exchange",""), cs.get("authentication",""), cs.get("bulk_encryption",""), sig_label, pfs_label, cs.get("security_bits",""), sv, SCORE.get(sv, 0), recommendation])
+        ws.append([i, cs.get("cipher_name",""), cs.get("protocol",""), cs.get("key_exchange",""), cs.get("authentication",""), bulk_label, sig_label, pfs_label, cs.get("security_bits",""), sv, SCORE.get(sv, 0), recommendation])
         r = ws.max_row
         for c in ws[r]: c.border = BRD; c.alignment = WRP; c.font = _font()
         sb, sf = SEV_STYLE.get(sv, ("00000000","00000000"))
