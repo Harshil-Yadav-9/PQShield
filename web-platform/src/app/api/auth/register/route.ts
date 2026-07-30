@@ -25,6 +25,15 @@ export async function POST(req: NextRequest) {
   const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
   if (existing?.emailVerified) {
+    if (!existing.passwordHash) {
+      return NextResponse.json(
+        {
+          error:
+            "This email is linked to a Google account. Sign in with Google instead, or use \"Forgot password\" if you'd like to set a password for it.",
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: "An account with that email already exists. Try signing in instead." },
       { status: 409 },

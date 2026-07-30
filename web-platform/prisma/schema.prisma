@@ -64,6 +64,18 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
+// Deliberately a separate model from VerificationToken (not just a shared
+// table with a "purpose" column) — this guarantees a leaked/guessed
+// email-verification token can never double as a password-reset token,
+// and vice versa, without relying on application code to check a flag.
+model PasswordResetToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
 // ---- App data ----
 
 // Only signed-in users' scans are stored here — this is what "My scans" and

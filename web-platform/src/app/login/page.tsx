@@ -40,7 +40,7 @@ function VerifyBanner({ onPrefillEmail }: { onPrefillEmail: (email: string) => v
 
 function LoginPageInner() {
   const router = useRouter();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [mode, setMode] = useState<"signin" | "signup" | "forgot">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -49,6 +49,7 @@ function LoginPageInner() {
   const [loading, setLoading] = useState(false);
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
   const [signupSent, setSignupSent] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
 
   async function handleResend() {
     setResendState("sending");
@@ -70,6 +71,20 @@ function LoginPageInner() {
     setLoading(true);
 
     try {
+      if (mode === "forgot") {
+        await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+        // Always show the same confirmation regardless of what the API
+        // actually did — matches the endpoint's own anti-enumeration
+        // response, so the UI never leaks whether the email exists.
+        setForgotSent(true);
+        setLoading(false);
+        return;
+      }
+
       if (mode === "signup") {
         const res = await fetch("/api/auth/register", {
           method: "POST",
@@ -104,6 +119,31 @@ function LoginPageInner() {
     }
   }
 
+  if (forgotSent) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-8 py-24">
+        <div className="w-full max-w-sm text-center">
+          <h1 className="font-display text-[22px] font-bold tracking-tight text-ink-950">
+            Check your email
+          </h1>
+          <p className="mt-3 text-[13.5px] text-ink-600 leading-relaxed">
+            If <span className="font-medium text-ink-950">{email}</span> has an account, we sent
+            a link to reset the password. It expires in 1 hour.
+          </p>
+          <button
+            onClick={() => {
+              setForgotSent(false);
+              setMode("signin");
+            }}
+            className="mt-8 text-[13px] font-medium text-ink-950 hover:underline"
+          >
+            Back to sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (signupSent) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-8 py-24">
@@ -133,30 +173,38 @@ function LoginPageInner() {
     <div className="min-h-screen flex flex-col items-center justify-center px-8 py-24">
       <div className="w-full max-w-sm">
         <h1 className="font-display text-[26px] font-bold tracking-tight text-ink-950 text-center">
-          {mode === "signin" ? "Sign in" : "Create an account"}
+          {mode === "signin" ? "Sign in" : mode === "signup" ? "Create an account" : "Reset password"}
         </h1>
         <p className="mt-2 text-[13px] text-ink-500 text-center">
-          {mode === "signin" ? "Save and revisit your scan history." : "Takes a minute — no card required."}
+          {mode === "signin"
+            ? "Save and revisit your scan history."
+            : mode === "signup"
+              ? "Takes a minute — no card required."
+              : "Enter your email and we'll send a reset link."}
         </p>
 
         <Suspense fallback={null}>
           <VerifyBanner onPrefillEmail={setEmail} />
         </Suspense>
 
-        <button
-          onClick={() => signIn("google", { callbackUrl: "/" })}
-          className="mt-8 w-full rounded-xl border border-ink-200 bg-white py-2.5 text-[13.5px] font-medium text-ink-950 hover:bg-ink-50 transition-colors"
-        >
-          Continue with Google
-        </button>
+        {mode !== "forgot" && (
+          <>
+            <button
+              onClick={() => signIn("google", { callbackUrl: "/" })}
+              className="mt-8 w-full rounded-xl border border-ink-200 bg-white py-2.5 text-[13.5px] font-medium text-ink-950 hover:bg-ink-50 transition-colors"
+            >
+              Continue with Google
+            </button>
 
-        <div className="mt-6 flex items-center gap-3">
-          <div className="h-px flex-1 bg-ink-200" />
-          <span className="text-[11px] text-ink-400">or</span>
-          <div className="h-px flex-1 bg-ink-200" />
-        </div>
+            <div className="mt-6 flex items-center gap-3">
+              <div className="h-px flex-1 bg-ink-200" />
+              <span className="text-[11px] text-ink-400">or</span>
+              <div className="h-px flex-1 bg-ink-200" />
+            </div>
+          </>
+        )}
 
-        <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
+        <form onSubmit={handleSubmit} className={`${mode === "forgot" ? "mt-8" : "mt-6"} flex flex-col gap-3`}>
           {mode === "signup" && (
             <input
               value={name}
@@ -173,15 +221,31 @@ function LoginPageInner() {
             placeholder="Email"
             className="w-full rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-[13.5px] text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-ink-400"
           />
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            required
-            minLength={8}
-            placeholder="Password"
-            className="w-full rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-[13.5px] text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-ink-400"
-          />
+          {mode !== "forgot" && (
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              required
+              minLength={8}
+              placeholder="Password"
+              className="w-full rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-[13.5px] text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-ink-400"
+            />
+          )}
+
+          {mode === "signin" && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setNeedsVerification(false);
+                setMode("forgot");
+              }}
+              className="self-end text-[12px] text-ink-500 hover:underline"
+            >
+              Forgot password?
+            </button>
+          )}
 
           {error && <p className="text-[12px] text-sev-critical">{error}</p>}
 
@@ -206,22 +270,42 @@ function LoginPageInner() {
             disabled={loading}
             className="mt-1 w-full rounded-xl bg-ink-950 text-white text-[13.5px] font-medium py-2.5 hover:bg-ink-800 disabled:opacity-60 transition-colors"
           >
-            {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+            {loading
+              ? "Please wait…"
+              : mode === "signin"
+                ? "Sign in"
+                : mode === "signup"
+                  ? "Create account"
+                  : "Send reset link"}
           </button>
         </form>
 
         <p className="mt-6 text-[12.5px] text-ink-500 text-center">
-          {mode === "signin" ? "Don't have an account? " : "Already have an account? "}
-          <button
-            onClick={() => {
-              setError(null);
-              setNeedsVerification(false);
-              setMode(mode === "signin" ? "signup" : "signin");
-            }}
-            className="text-ink-950 font-medium hover:underline"
-          >
-            {mode === "signin" ? "Sign up" : "Sign in"}
-          </button>
+          {mode === "forgot" ? (
+            <button
+              onClick={() => {
+                setError(null);
+                setMode("signin");
+              }}
+              className="text-ink-950 font-medium hover:underline"
+            >
+              Back to sign in
+            </button>
+          ) : (
+            <>
+              {mode === "signin" ? "Don't have an account? " : "Already have an account? "}
+              <button
+                onClick={() => {
+                  setError(null);
+                  setNeedsVerification(false);
+                  setMode(mode === "signin" ? "signup" : "signin");
+                }}
+                className="text-ink-950 font-medium hover:underline"
+              >
+                {mode === "signin" ? "Sign up" : "Sign in"}
+              </button>
+            </>
+          )}
         </p>
       </div>
     </div>

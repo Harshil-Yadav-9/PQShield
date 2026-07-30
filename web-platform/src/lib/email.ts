@@ -34,29 +34,29 @@ export class EmailNotConfiguredError extends Error {
   }
 }
 
-export async function sendVerificationEmail(email: string, verifyUrl: string): Promise<void> {
+export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<void> {
   if (!transporter) throw new EmailNotConfiguredError();
 
   await transporter.sendMail({
     from: `PQShield <${emailFrom}>`,
     to: email,
-    subject: "Verify your PQShield account",
+    subject: "Reset your PQShield password",
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
-        <h1 style="font-size: 20px; color: #0a0a0a;">Verify your email</h1>
+        <h1 style="font-size: 20px; color: #0a0a0a;">Reset your password</h1>
         <p style="font-size: 14px; color: #404040; line-height: 1.6;">
-          Confirm this is your email address to finish setting up your PQShield account.
-          This link expires in 24 hours.
+          Click below to choose a new password for your PQShield account.
+          This link expires in 1 hour and can only be used once.
         </p>
-        <a href="${verifyUrl}"
+        <a href="${resetUrl}"
            style="display: inline-block; margin-top: 12px; padding: 10px 20px; background: #0a0a0a; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 500;">
-          Verify email
+          Reset password
         </a>
         <p style="font-size: 12px; color: #a3a3a3; margin-top: 24px;">
-          If you didn't create a PQShield account, you can safely ignore this email.
+          If you didn't request this, you can safely ignore this email — your password won't change.
         </p>
       </div>
     `,
-    text: `Verify your PQShield account: ${verifyUrl}\n\nThis link expires in 24 hours. If you didn't create a PQShield account, you can ignore this email.`,
+    text: `Reset your PQShield password: ${resetUrl}\n\nThis link expires in 1 hour and can only be used once. If you didn't request this, you can ignore this email.`,
   });
 }
