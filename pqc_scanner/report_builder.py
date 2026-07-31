@@ -42,6 +42,9 @@ from .risk_engine import (
     _j,
     resolve_cipher_suite_severity,
     CIPHER_SUITE_SCORING_MODE,
+    _cipher_key_exchange_recommendation,
+    _cipher_signature_recommendation,
+    _cipher_bulk_recommendation,
 )
 
 SECTION_ID_BY_NAME = {
@@ -345,12 +348,28 @@ def build_scan_report(data: dict) -> dict:
     # cs_sec — so the section's raw/lo/hi/normalized score is identical to the
     # Excel even though the website lists every cipher individually instead of
     # one "see the other sheet" summary row.
+    # ---------------- Cipher Suites ----------------
     s = Section("Cipher Suites", 23)
     for cs in data.get("cipher_suites", []):
         if not isinstance(cs, dict):
             continue
-        sv = resolve_cipher_suite_severity(cs.get("cipher_name", ""), cs, CIPHER_SUITE_SCORING_MODE)
-        s.add(cs.get("cipher_name", ""), "Supported", "RFC 8446 / RFC 5246", sv, _rec(sv, "review this cipher suite for deprecation / legacy fallback removal."), -10, 10)
+        
+        c_name = cs.get("cipher_name", "")
+        nm = c_name.upper()
+        raw_kx = str(cs.get("key_exchange", "")) or ""
+        kx = raw_kx.upper()
+        sec_bits = cs.get("security_bits", 0) or 0
+
+        sv = resolve_cipher_suite_severity(c_name, cs, CIPHER_SUITE_SCORING_MODE)
+
+        # Build recommendation using the exact risk_engine.py helpers
+        key_label, key_std, key_rec = _cipher_key_exchange_recommendation(kx, sec_bits)
+        sig_label, sig_std, sig_rec = _cipher_signature_recommendation(nm, cs.get("mac", ""), sec_bits)
+        bulk_label, bulk_std, bulk_rec = _cipher_bulk_recommendation(cs.get("bulk_encryption", ""), cs.get("mac", ""), c_name)
+
+        recommendation = f"{key_label} ({key_std}): {key_rec}, {sig_label} ({sig_std}): {sig_rec}, {bulk_label} ({bulk_std}): {bulk_rec}"
+
+        s.add(c_name, "Supported", "RFC 8446 / RFC 5246", sv, recommendation, -10, 10)
     cipher_suites_section = _finalize_section(s)
     if not data.get("cipher_suites"):
         # Zero rows here already normalizes to 0 (see _norm in risk_engine.py),
