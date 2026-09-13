@@ -81,7 +81,7 @@ export default function ReportView({
                 <div className="h-full bg-ink-950" style={{ width: `${pqcReadiness}%` }} />
               </div>
               <p className="mt-3 text-[11.5px] text-ink-500 leading-relaxed">
-                No ML-KEM key exchange or ML-DSA / SLH-DSA signatures negotiated in this handshake.
+                No ML-DSA / SLH-DSA signatures negotiated in this handshake.
               </p>
             </div>
 
